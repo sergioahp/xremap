@@ -14,9 +14,10 @@ use nix::sys::inotify::{AddWatchFlags, Inotify, InotifyEvent};
 use nix::sys::select::select;
 use nix::sys::select::FdSet;
 use nix::sys::timerfd::{ClockId, TimerFd, TimerFlags};
+use nix::sys::socket::{bind, listen, accept, socket, AddressFamily, SockType, SockFlag, UnixAddr};
 use std::collections::HashMap;
-use std::io::stdout;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::io::{stdout, Read};
+use std::os::unix::io::{AsRawFd, RawFd, FromRawFd};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -149,10 +150,27 @@ fn main() -> anyhow::Result<()> {
     };
     let mut dispatcher = ActionDispatcher::new(output_device);
 
+    // Create Unix domain socket for disable signal
+    let socket_path = "/tmp/xremap_control.sock";
+    // Remove existing socket file if it exists
+    let _ = std::fs::remove_file(socket_path);
+    let socket_fd = socket(
+        AddressFamily::Unix,
+        SockType::Stream,
+        SockFlag::empty(),
+        None,
+    )?;
+    let socket_addr = UnixAddr::new(socket_path)?;
+    bind(socket_fd, &socket_addr)?;
+    listen(socket_fd, 1)?;
+    println!("Control socket created at {}", socket_path);
+
+    let mut mappings_enabled = true;
+
     // Main loop
     loop {
         match 'event_loop: loop {
-            let readable_fds = select_readable(input_devices.values(), &watchers, timer_fd)?;
+            let readable_fds = select_readable(input_devices.values(), &watchers, timer_fd, socket_fd)?;
             if readable_fds.contains(timer_fd) {
                 if let Err(error) =
                     handle_events(&mut handler, &mut dispatcher, &mut config, vec![Event::OverrideTimeout])
@@ -161,12 +179,43 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Handle control socket connections
+            if readable_fds.contains(socket_fd) {
+                match accept(socket_fd) {
+                    Ok(client_fd) => {
+                        let mut buffer = [0u8; 64];
+                        let mut file = unsafe { std::fs::File::from_raw_fd(client_fd) };
+                        {
+                            if let Ok(bytes_read) = file.read(&mut buffer) {
+                                if let Ok(command) = std::str::from_utf8(&buffer[..bytes_read]) {
+                                    let command = command.trim();
+                                    match command {
+                                        "disable" => {
+                                            mappings_enabled = false;
+                                            println!("Key mappings disabled");
+                                        }
+                                        "enable" => {
+                                            mappings_enabled = true;
+                                            println!("Key mappings enabled");
+                                        }
+                                        _ => {
+                                            println!("Unknown command: {}", command);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+
             for input_device in input_devices.values_mut() {
                 if !readable_fds.contains(input_device.as_raw_fd()) {
                     continue;
                 }
 
-                if !handle_input_events(input_device, &mut handler, &mut dispatcher, &mut config)? {
+                if !handle_input_events(input_device, &mut handler, &mut dispatcher, &mut config, mappings_enabled)? {
                     println!("Found a removed device. Reselecting devices.");
                     break 'event_loop ReloadEvent::ReloadDevices;
                 }
@@ -216,9 +265,11 @@ fn select_readable<'a>(
     devices: impl Iterator<Item = &'a InputDevice>,
     watchers: &[&Inotify],
     timer_fd: RawFd,
+    socket_fd: RawFd,
 ) -> anyhow::Result<FdSet> {
     let mut read_fds = FdSet::new();
     read_fds.insert(timer_fd);
+    read_fds.insert(socket_fd);
     for device in devices {
         read_fds.insert(device.as_raw_fd());
     }
@@ -235,6 +286,7 @@ fn handle_input_events(
     handler: &mut EventHandler,
     dispatcher: &mut ActionDispatcher,
     config: &mut Config,
+    mappings_enabled: bool,
 ) -> anyhow::Result<bool> {
     let mut device_exists = true;
     let events = match input_device.fetch_events().map_err(|e| (e.raw_os_error(), e)) {
@@ -245,8 +297,16 @@ fn handle_input_events(
         Err((_, error)) => Err(error).context("Error fetching input events"),
         Ok(events) => Ok(events.collect()),
     }?;
-    let input_events = events.iter().map(|e| Event::new(input_device.to_info(), *e)).collect();
-    handle_events(handler, dispatcher, config, input_events)?;
+    
+    if mappings_enabled {
+        let input_events = events.iter().map(|e| Event::new(input_device.to_info(), *e)).collect();
+        handle_events(handler, dispatcher, config, input_events)?;
+    } else {
+        // When mappings are disabled, pass through original events directly
+        for event in events {
+            dispatcher.on_action(crate::action::Action::InputEvent(event))?;
+        }
+    }
     Ok(device_exists)
 }
 
