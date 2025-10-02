@@ -40,7 +40,7 @@ gnome = ["zbus"]
 x11 = ["x11rb"]
 hypr = ["hyprland", "wayland-client", "wayland-protocols-hyprland"]
 kde = ["zbus"]
-wlroots = ["wayland-client", "wayland-protocols-wlr"]
+wlroots = ["hyprland", "wayland-client", "wayland-protocols-wlr", "wayland-protocols-hyprland"]
 udev = ["dep:udev"]
 niri = ["niri-ipc"]
 

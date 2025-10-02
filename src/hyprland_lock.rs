@@ -1,28 +1,28 @@
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 use wayland_client::{protocol::wl_registry, Connection, Dispatch, Proxy, QueueHandle};
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 use wayland_protocols_hyprland::lock_notify::v1::client::{
     hyprland_lock_notification_v1, hyprland_lock_notifier_v1,
 };
 
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 use std::sync::{Arc, Mutex};
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 use std::thread;
 
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 pub struct HyprlandLockWatcher {
     pub is_locked: Arc<Mutex<bool>>,
 }
 
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 struct LockState {
     notifier: Option<hyprland_lock_notifier_v1::HyprlandLockNotifierV1>,
     notification: Option<hyprland_lock_notification_v1::HyprlandLockNotificationV1>,
     is_locked: Arc<Mutex<bool>>,
 }
 
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 impl Dispatch<wl_registry::WlRegistry, ()> for LockState {
     fn event(
         state: &mut Self,
@@ -44,7 +44,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for LockState {
     }
 }
 
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 impl Dispatch<hyprland_lock_notification_v1::HyprlandLockNotificationV1, ()> for LockState {
     fn event(
         state: &mut Self,
@@ -72,10 +72,10 @@ impl Dispatch<hyprland_lock_notification_v1::HyprlandLockNotificationV1, ()> for
     }
 }
 
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 wayland_client::delegate_noop!(LockState: hyprland_lock_notifier_v1::HyprlandLockNotifierV1);
 
-#[cfg(feature = "hypr")]
+#[cfg(any(feature = "hypr", feature = "wlroots"))]
 impl HyprlandLockWatcher {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let is_locked = Arc::new(Mutex::new(false));
@@ -130,10 +130,10 @@ impl HyprlandLockWatcher {
     }
 }
 
-#[cfg(not(feature = "hypr"))]
+#[cfg(not(any(feature = "hypr", feature = "wlroots")))]
 pub struct HyprlandLockWatcher;
 
-#[cfg(not(feature = "hypr"))]
+#[cfg(not(any(feature = "hypr", feature = "wlroots")))]
 impl HyprlandLockWatcher {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(HyprlandLockWatcher)
