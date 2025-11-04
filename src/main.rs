@@ -27,6 +27,7 @@ mod config;
 mod device;
 mod event;
 mod event_handler;
+mod hyprland_lock;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -158,6 +159,18 @@ fn main() -> anyhow::Result<()> {
     };
     let mut dispatcher = ActionDispatcher::new(output_device);
 
+    // Initialize Hyprland lock watcher if available
+    let hyprland_lock_watcher = match hyprland_lock::HyprlandLockWatcher::new() {
+        Ok(watcher) => {
+            println!("Hyprland lock detection enabled");
+            Some(watcher)
+        }
+        Err(e) => {
+            println!("Hyprland lock detection not available: {}", e);
+            None
+        }
+    };
+
     // Main loop
     loop {
         match 'event_loop: loop {
@@ -175,7 +188,13 @@ fn main() -> anyhow::Result<()> {
                     continue;
                 }
 
-                if !handle_input_events(input_device, &mut handler, &mut dispatcher, &mut config)? {
+                // Check if we should disable mappings due to lock state
+                let mappings_enabled = hyprland_lock_watcher
+                    .as_ref()
+                    .map(|watcher| !watcher.is_locked())
+                    .unwrap_or(true);
+
+                if !handle_input_events(input_device, &mut handler, &mut dispatcher, &mut config, mappings_enabled)? {
                     println!("Found a removed device. Reselecting devices.");
                     break 'event_loop ReloadEvent::ReloadDevices;
                 }
@@ -244,6 +263,7 @@ fn handle_input_events(
     handler: &mut EventHandler,
     dispatcher: &mut ActionDispatcher,
     config: &mut Config,
+    mappings_enabled: bool,
 ) -> anyhow::Result<bool> {
     let mut device_exists = true;
     let events = match input_device.fetch_events().map_err(|e| (e.raw_os_error(), e)) {
@@ -254,8 +274,16 @@ fn handle_input_events(
         Err((_, error)) => Err(error).context("Error fetching input events"),
         Ok(events) => Ok(events.collect()),
     }?;
-    let input_events = events.iter().map(|e| Event::new(input_device.to_info(), *e)).collect();
-    handle_events(handler, dispatcher, config, input_events)?;
+    
+    if mappings_enabled {
+        let input_events = events.iter().map(|e| Event::new(input_device.to_info(), *e)).collect();
+        handle_events(handler, dispatcher, config, input_events)?;
+    } else {
+        // When mappings are disabled (screen locked), pass through original events directly
+        for event in events {
+            dispatcher.on_action(crate::action::Action::InputEvent(event))?;
+        }
+    }
     Ok(device_exists)
 }
 
