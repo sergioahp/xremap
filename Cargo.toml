@@ -47,6 +47,10 @@ udev = ["dep:udev"]
 niri = ["niri-ipc"]
 device-test = []
 
+[[bin]]
+name = "xremap-config-splitter"
+path = "src/bin/config_splitter.rs"
+
 [profile.release]
 codegen-units = 1
 lto = true

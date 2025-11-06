@@ -1,0 +1,209 @@
+# Example xremap config with descriptions for dmenu/rofi
+# Use xremap-config-splitter to split this into:
+# 1. Clean config file (ready to use with xremap)
+# 2. Dmenu file (for use with rofi/dmenu launchers)
+
+default_mode: default
+
+modmap:
+  - name: Global modifiers
+    remap:
+      CapsLock: Esc
+      Alt_L: Ctrl_L
+
+  - name: Multi-purpose Space
+    remap:
+      Space:
+        held: Shift_L
+        alone: Space
+        alone_timeout_millis: 200
+        free_hold: true
+
+keymap:
+  # Application launchers
+  - name: Launch applications
+    mode: default
+    remap:
+      Super-t:
+        launch: [xterm]
+        description: "Open terminal"
+
+      Super-b:
+        launch: [firefox]
+        description: "Open web browser"
+
+      Super-e:
+        launch: [emacs]
+        description: "Open Emacs editor"
+
+      Super-f:
+        launch: [thunar]
+        description: "Open file manager"
+
+      Super-m:
+        launch: [bash, -c, "rofi -show drun"]
+        description: "Show application menu"
+
+  # Emacs-like bindings (except in terminals and Emacs)
+  - name: Emacs bindings
+    mode: default
+    application:
+      not: [Emacs, Terminal, Alacritty, kitty]
+    remap:
+      C-a:
+        action: Home
+        description: "Move to beginning of line"
+
+      C-e:
+        action: End
+        description: "Move to end of line"
+
+      C-f:
+        action: Right
+        description: "Move forward one character"
+
+      C-b:
+        action: Left
+        description: "Move backward one character"
+
+      C-n:
+        action: Down
+        description: "Move to next line"
+
+      C-p:
+        action: Up
+        description: "Move to previous line"
+
+      C-k:
+        action: [Shift-End, C-x]
+        description: "Kill line (cut to end of line)"
+
+      M-w:
+        action: [C-c, { set_mark: false }]
+        description: "Copy selection"
+
+      C-w:
+        action: [C-x, { set_mark: false }]
+        description: "Kill selection (cut)"
+
+      C-y:
+        action: C-v
+        description: "Yank (paste)"
+
+      C-space:
+        action: { set_mark: true }
+        description: "Set mark (start selection)"
+
+      C-g:
+        action: { set_mark: false }
+        description: "Cancel selection"
+
+  # Window management
+  - name: Window management
+    mode: default
+    remap:
+      Super-h:
+        action: Super-Left
+        description: "Tile window left"
+
+      Super-l:
+        action: Super-Right
+        description: "Tile window right"
+
+      Super-k:
+        action: Super-Up
+        description: "Maximize window"
+
+      Super-j:
+        action: Super-Down
+        description: "Restore window"
+
+      Super-q:
+        action: Alt-F4
+        description: "Close window"
+
+  # Media controls
+  - name: Media controls
+    mode: default
+    remap:
+      Super-F9:
+        action: KEY_PLAYPAUSE
+        description: "Play/Pause media"
+
+      Super-F10:
+        action: KEY_PREVIOUSSONG
+        description: "Previous track"
+
+      Super-F11:
+        action: KEY_NEXTSONG
+        description: "Next track"
+
+      Super-F12:
+        action: KEY_MUTE
+        description: "Mute/Unmute audio"
+
+  # Key sequences (Emacs C-x prefix)
+  - name: Emacs C-x sequences
+    mode: default
+    application:
+      not: [Emacs]
+    remap:
+      C-x:
+        remap:
+          C-c:
+            action: Alt-F4
+            description: "Exit application"
+
+          C-s:
+            action: C-w
+            description: "Close tab/window"
+
+          C-f:
+            action: C-o
+            description: "Open file"
+        timeout_millis: 1000
+        timeout_key: C-x
+
+  # Vim-like navigation (in normal mode)
+  - name: Vim navigation
+    mode: normal
+    remap:
+      h:
+        action: Left
+        description: "Move left"
+
+      j:
+        action: Down
+        description: "Move down"
+
+      k:
+        action: Up
+        description: "Move up"
+
+      l:
+        action: Right
+        description: "Move right"
+
+      w:
+        action: C-Right
+        description: "Move forward one word"
+
+      b:
+        action: C-Left
+        description: "Move backward one word"
+
+      i:
+        action: { set_mode: insert }
+        description: "Enter insert mode"
+
+      Esc:
+        action: { set_mode: insert }
+        description: "Return to insert mode"
+
+  # Mode switching
+  - name: Mode switching
+    mode: insert
+    remap:
+      C-Esc:
+        action: { set_mode: normal }
+        description: "Enter normal mode (Vim-like)"
