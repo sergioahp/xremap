@@ -1,0 +1,43 @@
+# Minimal config exercising the pattern DSL + signal dispatcher
+signals:
+  nav.left:
+    repeat: true
+    interval_ms: 50
+    actions:
+      - launch:
+        - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
+        - -c
+        - 'echo nav.left >> /tmp/xremap-nav.log'
+  nav.right:
+    repeat: true
+    interval_ms: 50
+    actions:
+      - launch:
+        - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
+        - -c
+        - 'echo nav.right >> /tmp/xremap-nav.log'
+  nav.up:
+    repeat: true
+    interval_ms: 50
+    actions:
+      - launch:
+        - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
+        - -c
+        - 'echo nav.up >> /tmp/xremap-nav.log'
+  nav.down:
+    repeat: true
+    interval_ms: 50
+    actions:
+      - launch:
+        - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
+        - -c
+        - 'echo nav.down >> /tmp/xremap-nav.log'
+  nav.stop:
+    actions: []
+
+patterns:
+  Nav: "Super_L Space (Space!|ε) ( j => emit_start(nav.down) | j! => emit_stop(nav.down) | k => emit_start(nav.up) | k! => emit_stop(nav.up) | h => emit_start(nav.left) | h! => emit_stop(nav.left) | l => emit_start(nav.right) | l! => emit_stop(nav.right) | Space! => noop )* end_on(Super_L!) => emit(nav.stop)"
+  SuperGNav: "Super_L g (g!|ε) ( h => emit_start(nav.left) | h! => emit_stop(nav.left) | j => emit_start(nav.down) | j! => emit_stop(nav.down) | k => emit_start(nav.up) | k! => emit_stop(nav.up) | l => emit_start(nav.right) | l! => emit_stop(nav.right) | g! => noop )* end_on(Super_L!) => emit(nav.stop)"
+
+keymap: []
+modmap: []

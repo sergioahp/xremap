@@ -145,6 +145,7 @@ impl<'a> Parser<'a> {
     fn parse_rep(&mut self) -> Result<Node, ParseError> {
         let mut node = self.parse_primary()?;
         self.skip_ws();
+        let mut applied_repeat = false;
         if let Some(q) = self.peek() {
             let kind = match q {
                 '*' => Some(RepeatKind::ZeroOrMore),
@@ -158,12 +159,19 @@ impl<'a> Parser<'a> {
                     node: Box::new(node),
                     kind: k,
                 });
+                applied_repeat = true;
             }
         }
         self.skip_ws();
         if self.match_arrow() {
             let actions = self.parse_actions()?;
-            node.actions = actions;
+            if applied_repeat {
+                if let NodeKind::Repeat { node: inner, .. } = &mut node.kind {
+                    inner.actions.extend(actions);
+                }
+            } else {
+                node.actions = actions;
+            }
         }
         Ok(node)
     }

@@ -172,13 +172,15 @@ impl EventHandler {
         let mut send_original_relative_event = false;
         // Apply keymap
         for (key, value) in key_values.into_iter() {
-            let edge = if value == RELEASE {
-                Edge::Release(key)
-            } else {
-                Edge::Press(key)
-            };
-            if self.process_patterns(&edge)? {
-                continue;
+            if value != REPEAT {
+                let edge = if value == RELEASE {
+                    Edge::Release(key)
+                } else {
+                    Edge::Press(key)
+                };
+                if self.process_patterns(&edge)? {
+                    continue;
+                }
             }
 
             if config.virtual_modifiers.contains(&key) {
