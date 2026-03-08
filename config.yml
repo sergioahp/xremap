@@ -2,37 +2,36 @@
 socket_path: /tmp/xremap-nav.sock
 
 signals:
+  float.enable:
+    actions:
+      - socket_send: '{"action":"start","id":"float.enable","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","setfloating","active"]}'
+
   move.left:
     repeat: true
     interval_ms: 50
     actions:
-      - socket_send: '{"action":"start","id":"move.left","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","movefocus","l"]}'
-  move.left.stop:
-    actions:
-      - socket_send: '{"action":"stop","id":"move.left"}'
+      - socket_send: '{"action":"start","id":"move.left","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","moveactive","-30","0"]}'
   move.right:
     repeat: true
     interval_ms: 50
     actions:
-      - socket_send: '{"action":"start","id":"move.right","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","movefocus","r"]}'
-  move.right.stop:
-    actions:
-      - socket_send: '{"action":"stop","id":"move.right"}'
+      - socket_send: '{"action":"start","id":"move.right","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","moveactive","30","0"]}'
   move.up:
     repeat: true
     interval_ms: 50
     actions:
-      - socket_send: '{"action":"start","id":"move.up","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","movefocus","u"]}'
-  move.up.stop:
-    actions:
-      - socket_send: '{"action":"stop","id":"move.up"}'
+      - socket_send: '{"action":"start","id":"move.up","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","moveactive","0","-30"]}'
   move.down:
     repeat: true
     interval_ms: 50
     actions:
-      - socket_send: '{"action":"start","id":"move.down","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","movefocus","d"]}'
-  move.down.stop:
+      - socket_send: '{"action":"start","id":"move.down","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","moveactive","0","30"]}'
+
+  move.stop:
     actions:
+      - socket_send: '{"action":"stop","id":"move.left"}'
+      - socket_send: '{"action":"stop","id":"move.right"}'
+      - socket_send: '{"action":"stop","id":"move.up"}'
       - socket_send: '{"action":"stop","id":"move.down"}'
 
   resize.left:
@@ -40,37 +39,31 @@ signals:
     interval_ms: 50
     actions:
       - socket_send: '{"action":"start","id":"resize.left","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","-20","0"]}'
-  resize.left.stop:
-    actions:
-      - socket_send: '{"action":"stop","id":"resize.left"}'
   resize.right:
     repeat: true
     interval_ms: 50
     actions:
       - socket_send: '{"action":"start","id":"resize.right","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","20","0"]}'
-  resize.right.stop:
-    actions:
-      - socket_send: '{"action":"stop","id":"resize.right"}'
   resize.up:
     repeat: true
     interval_ms: 50
     actions:
       - socket_send: '{"action":"start","id":"resize.up","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","0","-20"]}'
-  resize.up.stop:
-    actions:
-      - socket_send: '{"action":"stop","id":"resize.up"}'
   resize.down:
     repeat: true
     interval_ms: 50
     actions:
       - socket_send: '{"action":"start","id":"resize.down","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","0","20"]}'
-  resize.down.stop:
-    actions:
-      - socket_send: '{"action":"stop","id":"resize.down"}'
 
+  resize.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"resize.left"}'
+      - socket_send: '{"action":"stop","id":"resize.right"}'
+      - socket_send: '{"action":"stop","id":"resize.up"}'
+      - socket_send: '{"action":"stop","id":"resize.down"}'
 patterns:
-  Move: "Super_L d ( d!|ε ) ( h => emit_start(move.left) | h! => emit(move.left.stop) | j => emit_start(move.down) | j! => emit(move.down.stop) | k => emit_start(move.up) | k! => emit(move.up.stop) | l => emit_start(move.right) | l! => emit(move.right.stop) | d! => noop )* end_on(Super_L!) => emit(move.left.stop)"
-  Resize: "Super_L u ( u!|ε ) ( h => emit_start(resize.left) | h! => emit(resize.left.stop) | j => emit_start(resize.down) | j! => emit(resize.down.stop) | k => emit_start(resize.up) | k! => emit(resize.up.stop) | l => emit_start(resize.right) | l! => emit(resize.right.stop) | u! => noop )* end_on(Super_L!) => emit(resize.left.stop)"
+  Move: "Super_L d => emit(float.enable) ( d!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) & emit(move.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) & emit(move.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) & emit(move.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) & emit(move.stop) | d! => noop )* end_on(Super_L!) => emit(move.stop)"
+  Resize: "Super_L u => emit(float.enable) ( u!|ε ) ( h => emit_start(resize.left) | h! => emit_stop(resize.left) & emit(resize.stop) | j => emit_start(resize.down) | j! => emit_stop(resize.down) & emit(resize.stop) | k => emit_start(resize.up) | k! => emit_stop(resize.up) & emit(resize.stop) | l => emit_start(resize.right) | l! => emit_stop(resize.right) & emit(resize.stop) | u! => noop )* end_on(Super_L!) => emit(resize.stop)"
 
 keymap: []
 modmap: []
