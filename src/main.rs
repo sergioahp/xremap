@@ -27,6 +27,7 @@ mod config;
 mod device;
 mod event;
 mod event_handler;
+mod signal;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
