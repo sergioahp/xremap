@@ -30,7 +30,7 @@ mod event_handler;
 mod pattern;
 mod signal;
 mod socket_worker;
-use crate::socket_worker::SocketWorker;
+use crate::socket_worker::start_worker;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -151,8 +151,8 @@ fn main() -> anyhow::Result<()> {
     let config_watcher = config_watcher(watch_config, &config_paths).context("Setting up config watcher")?;
     let watchers: Vec<_> = device_watcher.iter().chain(config_watcher.iter()).collect();
     let signal_dispatcher = event_handler::make_signal_dispatcher(&config);
-    let _socket_worker = if let Some(path) = &config.socket_path_runtime {
-        Some(SocketWorker::start(path.clone())?)
+    let worker_handle = if config.socket_path_runtime.is_some() {
+        Some(start_worker())
     } else {
         None
     };
@@ -165,7 +165,7 @@ fn main() -> anyhow::Result<()> {
         signal_dispatcher,
         config.compiled_patterns.clone(),
         config.pattern_start_table.clone(),
-        config.socket_path_runtime.clone(),
+        worker_handle,
     );
     let vendor = u16::from_str_radix(vendor.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x1234);
     let product = u16::from_str_radix(product.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x5678);

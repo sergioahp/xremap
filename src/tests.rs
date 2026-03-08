@@ -835,7 +835,7 @@ fn test_pattern_emit_signal_actions() {
         dispatcher,
         config.compiled_patterns.clone(),
         config.pattern_start_table.clone(),
-        config.socket_path_runtime.clone(),
+        None,
     );
 
     let actions = handler

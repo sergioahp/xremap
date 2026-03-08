@@ -11,7 +11,7 @@ use crate::pattern::ast::{ActionSpec, Edge};
 use crate::device::InputDeviceInfo;
 use crate::event::{Event, KeyEvent, RelativeEvent};
 use crate::signal::{Signal, SignalBinding, SignalDispatcher};
-use crate::socket_worker::send_to_socket;
+use crate::socket_worker::WorkerHandle;
 use crate::config::{self, Config};
 use evdev::KeyCode as Key;
 use lazy_static::lazy_static;
@@ -60,7 +60,7 @@ pub struct EventHandler {
     pattern_start_table: std::collections::HashMap<(Key, bool), Vec<usize>>,
     compiled_patterns: Vec<crate::pattern::CompiledPattern>,
     next_signal_due: Option<Instant>,
-    socket_path: Option<String>,
+    worker_handle: Option<WorkerHandle>,
 }
 
 struct TaggedAction {
@@ -84,7 +84,7 @@ impl EventHandler {
         signal_dispatcher: SignalDispatcher,
         compiled_patterns: Vec<crate::pattern::CompiledPattern>,
         pattern_start_table: std::collections::HashMap<(Key, bool), Vec<usize>>,
-        socket_path: Option<String>,
+        worker_handle: Option<WorkerHandle>,
     ) -> EventHandler {
         EventHandler {
             modifiers: HashSet::new(),
@@ -108,7 +108,7 @@ impl EventHandler {
             pattern_start_table,
             compiled_patterns,
             next_signal_due: None,
-            socket_path,
+            worker_handle,
         }
     }
 
@@ -119,7 +119,7 @@ impl EventHandler {
         self.active_patterns.clear();
         self.signal_dispatcher.stop_all();
         self.schedule_signal_timer(None, Instant::now())?;
-        self.socket_path = config.socket_path.clone();
+        // worker_handle is process-lifetime; not reloaded on config change.
         Ok(())
     }
 
@@ -678,9 +678,9 @@ impl EventHandler {
                 }
             }
             KeymapAction::SocketSend(payload) => {
-                if let Some(path) = &self.socket_path {
-                    debug!("socket_send -> {} : {}", path, payload);
-                    send_to_socket(path, payload);
+                if let Some(handle) = &self.worker_handle {
+                    debug!("socket_send: {}", payload);
+                    handle.send_json(payload);
                 }
             }
         }
