@@ -56,12 +56,14 @@ impl SocketWorker {
                                     // Treat duplicate start as heartbeat; don't reset velocity.
                                     ctrl.last_heartbeat = now;
                                 } else {
+                                    // Fire once immediately for responsiveness
+                                    send_cmd(&msg.command);
                                     map.insert(
                                         msg.id.clone(),
                                         Controller {
                                             command: msg.command,
-                                            rate: 0.0,
-                                            target_rate: 30.0, // cmds/sec
+                                            rate: 20.0,        // initial cmds/sec for quick feel
+                                            target_rate: 30.0, // steady cmds/sec
                                             acc: 0.0,
                                             last_tick: now,
                                             last_heartbeat: now,
@@ -107,7 +109,7 @@ impl SocketWorker {
                     }
                 }
                 for cmd in to_run {
-                    let _ = std::process::Command::new(&cmd[0]).args(&cmd[1..]).spawn();
+                    send_cmd(&cmd);
                 }
             });
         }
@@ -120,4 +122,11 @@ pub fn send_to_socket(path: &str, msg: &str) {
     if let Ok(sock) = UnixDatagram::unbound() {
         let _ = sock.send_to(msg.as_bytes(), path);
     }
+}
+
+fn send_cmd(cmd: &Vec<String>) {
+    if cmd.is_empty() {
+        return;
+    }
+    let _ = std::process::Command::new(&cmd[0]).args(&cmd[1..]).spawn();
 }
