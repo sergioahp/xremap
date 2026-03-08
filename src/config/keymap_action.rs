@@ -91,7 +91,7 @@ where
 {
     let action = RemapActions::deserialize(deserializer)?;
     Ok(Remap {
-        remap: action.remap.into_iter().map(|(k, v)| (k, v.into_vec())).collect(),
+        remap: action.remap,
         timeout: action.timeout_millis.map(Duration::from_millis),
         timeout_key: if let Some(keys) = action.timeout_key {
             let parsed_keys: Result<Vec<_>, _> = keys.into_iter().map(|key| parse_key(&key)).collect();
@@ -191,6 +191,12 @@ pub enum Actions {
     NoAction,
     Action(KeymapAction),
     Actions(Vec<KeymapAction>),
+}
+
+impl Default for Actions {
+    fn default() -> Self {
+        Actions::NoAction
+    }
 }
 
 impl Actions {

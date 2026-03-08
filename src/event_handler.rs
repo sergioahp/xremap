@@ -36,6 +36,8 @@ pub struct EventHandler {
     extra_modifiers: HashSet<Key>,
     // Make sure the original event is released even if remapping changes while holding the key
     pressed_keys: HashMap<Key, Key>,
+    // Release hooks registered by press-time keymap matches
+    active_release_actions: Vec<ActiveRelease>,
     // Check the currently active application
     application_client: WMClient,
     application_cache: Option<String>,
@@ -65,12 +67,25 @@ struct TaggedAction {
     exact_match: bool,
 }
 
+struct ActiveRelease {
+    ending_keys: HashSet<Key>,
+    actions: Vec<TaggedAction>,
+}
+
+struct KeymapMatch {
+    press_actions: Vec<TaggedAction>,
+    release_actions: Vec<TaggedAction>,
+    repeat_actions: Vec<TaggedAction>,
+    modifiers: Vec<Modifier>,
+}
+
 impl EventHandler {
     pub fn new(timer: TimerFd, mode: &str, keypress_delay: Duration, application_client: WMClient) -> EventHandler {
         EventHandler {
             modifiers: HashSet::new(),
             extra_modifiers: HashSet::new(),
             pressed_keys: HashMap::new(),
+            active_release_actions: vec![],
             application_client,
             application_cache: None,
             title_cache: None,
@@ -120,6 +135,9 @@ impl EventHandler {
         self.application_cache = None; // expire cache
         self.title_cache = None; // expire cache
         let key = Key::new(event.code());
+        if event.value() == RELEASE {
+            self.trigger_release_actions(&key)?;
+        }
 
         if key.code() < DISGUISED_EVENT_OFFSETTER {
             debug!("=> {}: {:?}", event.value(), &key);
@@ -147,11 +165,53 @@ impl EventHandler {
             } else if is_pressed(value) {
                 if self.escape_next_key {
                     self.escape_next_key = false
-                } else if let Some(actions) = self.find_keymap(config, &key, device)? {
-                    self.dispatch_actions(&actions, &key)?;
+                } else if let Some(keymap_match) = self.find_keymap(config, &key, device)? {
+                    match value {
+                        PRESS => {
+                            if !keymap_match.press_actions.is_empty() {
+                                self.dispatch_actions(&keymap_match.press_actions, &key)?;
+                            }
+                            if !keymap_match.release_actions.is_empty() {
+                                let ending_keys = self.build_ending_keys(&keymap_match.modifiers, &key);
+                                if !ending_keys.is_empty() {
+                                    self.active_release_actions.push(ActiveRelease {
+                                        ending_keys,
+                                        actions: keymap_match.release_actions,
+                                    });
+                                }
+                            }
+                        }
+                        REPEAT => {
+                            if !keymap_match.repeat_actions.is_empty() {
+                                self.dispatch_actions(&keymap_match.repeat_actions, &key)?;
+                            }
+                        }
+                        _ => {}
+                    }
                     continue;
-                } else if let Some(actions) = self.find_keymap(config, &KEY_MATCH_ANY, device)? {
-                    self.dispatch_actions(&actions, &KEY_MATCH_ANY)?;
+                } else if let Some(keymap_match) = self.find_keymap(config, &KEY_MATCH_ANY, device)? {
+                    match value {
+                        PRESS => {
+                            if !keymap_match.press_actions.is_empty() {
+                                self.dispatch_actions(&keymap_match.press_actions, &key)?;
+                            }
+                            if !keymap_match.release_actions.is_empty() {
+                                let ending_keys = self.build_ending_keys(&keymap_match.modifiers, &key);
+                                if !ending_keys.is_empty() {
+                                    self.active_release_actions.push(ActiveRelease {
+                                        ending_keys,
+                                        actions: keymap_match.release_actions,
+                                    });
+                                }
+                            }
+                        }
+                        REPEAT => {
+                            if !keymap_match.repeat_actions.is_empty() {
+                                self.dispatch_actions(&keymap_match.repeat_actions, &key)?;
+                            }
+                        }
+                        _ => {}
+                    }
                     continue;
                 }
             }
@@ -455,7 +515,7 @@ impl EventHandler {
         config: &Config,
         key: &Key,
         device: &InputDeviceInfo,
-    ) -> Result<Option<Vec<TaggedAction>>, Box<dyn Error>> {
+    ) -> Result<Option<KeymapMatch>, Box<dyn Error>> {
         if !self.override_remaps.is_empty() {
             let entries: Vec<OverrideEntry> = self
                 .override_remaps
@@ -477,18 +537,33 @@ impl EventHandler {
                             continue;
                         }
 
-                        let actions = with_extra_modifiers(&entry.actions, &extra_modifiers, entry.exact_match);
-                        let is_remap = is_remap(&entry.actions);
+                        let press_actions =
+                            with_extra_modifiers(&entry.press_actions, &extra_modifiers, entry.exact_match);
+                        let release_actions =
+                            with_extra_modifiers(&entry.release_actions, &extra_modifiers, entry.exact_match);
+                        let repeat_actions =
+                            with_extra_modifiers(&entry.repeat_actions, &extra_modifiers, entry.exact_match);
+                        let is_remap = is_remap(&entry.press_actions);
 
                         // If the first/top match was a remap, continue to find rest of the eligible remaps for this key
                         if remaps.is_empty() && !is_remap {
-                            return Ok(Some(actions));
+                            return Ok(Some(KeymapMatch {
+                                press_actions,
+                                release_actions,
+                                repeat_actions,
+                                modifiers: entry.modifiers.clone(),
+                            }));
                         } else if is_remap {
-                            remaps.extend(actions);
+                            remaps.extend(press_actions);
                         }
                     }
                     if !remaps.is_empty() {
-                        return Ok(Some(remaps));
+                        return Ok(Some(KeymapMatch {
+                            press_actions: remaps,
+                            release_actions: vec![],
+                            repeat_actions: vec![],
+                            modifiers: vec![],
+                        }));
                     }
                 }
             }
@@ -529,18 +604,33 @@ impl EventHandler {
                         }
                     }
 
-                    let actions = with_extra_modifiers(&entry.actions, &extra_modifiers, entry.exact_match);
-                    let is_remap = is_remap(&entry.actions);
+                    let press_actions =
+                        with_extra_modifiers(&entry.press_actions, &extra_modifiers, entry.exact_match);
+                    let release_actions =
+                        with_extra_modifiers(&entry.release_actions, &extra_modifiers, entry.exact_match);
+                    let repeat_actions =
+                        with_extra_modifiers(&entry.repeat_actions, &extra_modifiers, entry.exact_match);
+                    let is_remap = is_remap(&entry.press_actions);
 
                     // If the first/top match was a remap, continue to find rest of the eligible remaps for this key
                     if remaps.is_empty() && !is_remap {
-                        return Ok(Some(actions));
+                        return Ok(Some(KeymapMatch {
+                            press_actions,
+                            release_actions,
+                            repeat_actions,
+                            modifiers: entry.modifiers.clone(),
+                        }));
                     } else if is_remap {
-                        remaps.extend(actions)
+                        remaps.extend(press_actions)
                     }
                 }
                 if !remaps.is_empty() {
-                    return Ok(Some(remaps));
+                    return Ok(Some(KeymapMatch {
+                        press_actions: remaps,
+                        release_actions: vec![],
+                        repeat_actions: vec![],
+                        modifiers: vec![],
+                    }));
                 }
             }
         }
@@ -730,6 +820,70 @@ impl EventHandler {
             return device_not.iter().all(|m| !device.matches(m));
         }
         false
+    }
+
+    fn trigger_release_actions(&mut self, key: &Key) -> Result<(), Box<dyn Error>> {
+        let mut remaining = vec![];
+        let mut to_fire: Vec<Vec<TaggedAction>> = vec![];
+        for active in self.active_release_actions.drain(..) {
+            if active.ending_keys.contains(key) {
+                to_fire.push(active.actions);
+            } else {
+                remaining.push(active);
+            }
+        }
+        self.active_release_actions = remaining;
+        for actions in to_fire {
+            self.dispatch_actions(&actions, key)?;
+        }
+        Ok(())
+    }
+
+    fn build_ending_keys(&self, modifiers: &[Modifier], trigger_key: &Key) -> HashSet<Key> {
+        let mut keys = HashSet::new();
+        keys.insert(*trigger_key);
+        for modifier in modifiers {
+            match modifier {
+                Modifier::Shift => {
+                    if self.modifiers.contains(&Key::KEY_LEFTSHIFT) {
+                        keys.insert(Key::KEY_LEFTSHIFT);
+                    }
+                    if self.modifiers.contains(&Key::KEY_RIGHTSHIFT) {
+                        keys.insert(Key::KEY_RIGHTSHIFT);
+                    }
+                }
+                Modifier::Control => {
+                    if self.modifiers.contains(&Key::KEY_LEFTCTRL) {
+                        keys.insert(Key::KEY_LEFTCTRL);
+                    }
+                    if self.modifiers.contains(&Key::KEY_RIGHTCTRL) {
+                        keys.insert(Key::KEY_RIGHTCTRL);
+                    }
+                }
+                Modifier::Alt => {
+                    if self.modifiers.contains(&Key::KEY_LEFTALT) {
+                        keys.insert(Key::KEY_LEFTALT);
+                    }
+                    if self.modifiers.contains(&Key::KEY_RIGHTALT) {
+                        keys.insert(Key::KEY_RIGHTALT);
+                    }
+                }
+                Modifier::Windows => {
+                    if self.modifiers.contains(&Key::KEY_LEFTMETA) {
+                        keys.insert(Key::KEY_LEFTMETA);
+                    }
+                    if self.modifiers.contains(&Key::KEY_RIGHTMETA) {
+                        keys.insert(Key::KEY_RIGHTMETA);
+                    }
+                }
+                Modifier::Key(key) => {
+                    if self.modifiers.contains(key) {
+                        keys.insert(*key);
+                    }
+                }
+            }
+        }
+        keys
     }
 
     fn update_modifier(&mut self, key: Key, value: i32) {

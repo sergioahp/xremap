@@ -211,6 +211,17 @@ fn test_yaml_keymap_launch() {
 }
 
 #[test]
+fn test_yaml_keymap_press_release_actions() {
+    yaml_assert_parse(indoc! {"
+    keymap:
+      - remap:
+          SUPER-G:
+            on_press:   [{ set_mode: resize }]
+            on_release: [{ set_mode: default }]
+    "})
+}
+
+#[test]
 fn test_yaml_keymap_mode() {
     yaml_assert_parse(indoc! {"
     default_mode: insert

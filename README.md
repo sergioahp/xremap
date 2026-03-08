@@ -340,6 +340,10 @@ keymap:
       MOD1-KEY_XXX7: { escape_next_key: true }
       # Set mode to configure Vim-like modal remapping
       MOD1-KEY_XXX8: { set_mode: default }
+      # Run different actions on press vs release of a chord (e.g., momentary layer)
+      SUPER-G:
+        on_press:   [{ set_mode: resize }]
+        on_release: [{ set_mode: default }]
       # Illustrate a nested mapping that times out;
       # also useful for timing out double-key sequences if the second key is never pressed.
       space:  # Use timeout to fix a bouncy spacebar

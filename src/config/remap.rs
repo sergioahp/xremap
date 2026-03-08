@@ -1,17 +1,15 @@
 use evdev::KeyCode as Key;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::config::application::deserialize_string_or_vec;
 use crate::config::key_press::KeyPress;
-use crate::config::keymap_action::KeymapAction;
+use crate::config::keymap::{KeymapActionsRaw, KeymapActionsSplit};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use super::keymap_action::Actions;
-
 #[derive(Clone, Debug)]
 pub struct Remap {
-    pub remap: HashMap<KeyPress, Vec<KeymapAction>>,
+    pub remap: HashMap<KeyPress, KeymapActionsSplit>,
     pub timeout: Option<Duration>,
     pub timeout_key: Option<Vec<Key>>,
 }
@@ -19,8 +17,20 @@ pub struct Remap {
 // USed only for deserialization
 #[derive(Debug, Deserialize)]
 pub struct RemapActions {
-    pub remap: HashMap<KeyPress, Actions>,
+    #[serde(deserialize_with = "deserialize_remap")]
+    pub remap: HashMap<KeyPress, KeymapActionsSplit>,
     pub timeout_millis: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub timeout_key: Option<Vec<String>>,
+}
+
+fn deserialize_remap<'de, D>(deserializer: D) -> Result<HashMap<KeyPress, KeymapActionsSplit>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let remap = HashMap::<KeyPress, KeymapActionsRaw>::deserialize(deserializer)?;
+    Ok(remap
+        .into_iter()
+        .map(|(key_press, actions)| (key_press, actions.into_split()))
+        .collect())
 }
