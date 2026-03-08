@@ -19,9 +19,10 @@ struct SocketMessage {
 
 struct Controller {
     command: Vec<String>,
-    rate: f32,          // current commands per second
-    target_rate: f32,   // desired steady-state rate
+    rate: f32,          // commands per second (fixed target cadence)
     acc: f32,           // fractional accumulator for sends
+    scale: f32,         // current step scale
+    target_scale: f32,  // desired step scale
     last_tick: Instant, // time of last tick update
     last_heartbeat: Instant,
 }
@@ -53,18 +54,18 @@ impl SocketWorker {
                             "start" => {
                                 let now = Instant::now();
                                 if let Some(ctrl) = map.get_mut(&msg.id) {
-                                    // Treat duplicate start as heartbeat; don't reset velocity.
                                     ctrl.last_heartbeat = now;
                                 } else {
                                     // Fire once immediately for responsiveness
-                                    send_cmd(&msg.command);
+                                    send_scaled_cmd(&msg.command, 1.0);
                                     map.insert(
                                         msg.id.clone(),
                                         Controller {
                                             command: msg.command,
-                                            rate: 20.0,        // initial cmds/sec for quick feel
-                                            target_rate: 30.0, // steady cmds/sec
+                                            rate: 60.0,        // fixed cadence
                                             acc: 0.0,
+                                            scale: 1.0,
+                                            target_scale: 3.0, // accelerate by increasing step size
                                             last_tick: now,
                                             last_heartbeat: now,
                                         },
@@ -91,7 +92,7 @@ impl SocketWorker {
             let controllers = controllers.clone();
             thread::spawn(move || loop {
                 thread::sleep(Duration::from_millis(10));
-                let mut to_run: Vec<Vec<String>> = vec![];
+                let mut to_run: Vec<(Vec<String>, f32)> = vec![];
                 {
                     let mut map = controllers.lock().unwrap();
                     let now = Instant::now();
@@ -99,17 +100,17 @@ impl SocketWorker {
                     for ctrl in map.values_mut() {
                         let dt = now.duration_since(ctrl.last_tick).as_secs_f32();
                         ctrl.last_tick = now;
-                        // Exponential easing toward target_rate
-                        ctrl.rate += (ctrl.target_rate - ctrl.rate) * 0.18;
+                        // Exponential easing toward target scale; rate stays fixed (60 cps)
+                        ctrl.scale += (ctrl.target_scale - ctrl.scale) * 0.18;
                         ctrl.acc += ctrl.rate * dt;
                         while ctrl.acc >= 1.0 {
                             ctrl.acc -= 1.0;
-                            to_run.push(ctrl.command.clone());
+                            to_run.push((ctrl.command.clone(), ctrl.scale));
                         }
                     }
                 }
-                for cmd in to_run {
-                    send_cmd(&cmd);
+                for (cmd, scale) in to_run {
+                    send_scaled_cmd(&cmd, scale);
                 }
             });
         }
@@ -124,9 +125,22 @@ pub fn send_to_socket(path: &str, msg: &str) {
     }
 }
 
-fn send_cmd(cmd: &Vec<String>) {
+fn send_scaled_cmd(cmd: &Vec<String>, scale: f32) {
     if cmd.is_empty() {
         return;
     }
-    let _ = std::process::Command::new(&cmd[0]).args(&cmd[1..]).spawn();
+    // Scale any numeric arguments (useful for moveactive/resizeactive)
+    let mut scaled: Vec<String> = Vec::with_capacity(cmd.len());
+    scaled.push(cmd[0].clone());
+    for arg in cmd.iter().skip(1) {
+        if let Ok(n) = arg.parse::<f32>() {
+            let val = (n * scale).round() as i32;
+            // Avoid collapsing to zero; preserve sign
+            let val = if val == 0 { if n >= 0.0 { 1 } else { -1 } } else { val };
+            scaled.push(val.to_string());
+        } else {
+            scaled.push(arg.clone());
+        }
+    }
+    let _ = std::process::Command::new(&scaled[0]).args(&scaled[1..]).spawn();
 }
