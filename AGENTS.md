@@ -5,6 +5,7 @@ This document tracks the plan to add key-release-aware command bindings (e.g., r
 ## Milestones
 - **M1**: Config surface
   - Add `on_press` / `on_release` (and optional `on_repeat`) action lists for a single keymap entry without breaking existing YAML/TOML.
+  - Keep trigger syntax aligned with README `keymap.remap` chords (e.g., `SUPER-G`), not modmap-only shapes.
 - **M2**: Dispatcher plumbing
   - Extend keymap lookup to fire actions on releases as well as presses.
   - Track active chord state so release actions trigger when any involved physical key is released.
