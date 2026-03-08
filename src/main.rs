@@ -27,6 +27,7 @@ mod config;
 mod device;
 mod event;
 mod event_handler;
+mod pattern;
 mod signal;
 #[cfg(test)]
 mod tests;
@@ -137,6 +138,8 @@ fn main() -> anyhow::Result<()> {
     // Event listeners
     let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty())?;
     let timer_fd = timer.as_raw_fd();
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty())?;
+    let signal_timer_fd = signal_timer.as_raw_fd();
     let delay = Duration::from_millis(config.keypress_delay_ms);
     let mut input_devices = match get_input_devices(&device_filter, &ignore_filter, mouse, watch_devices) {
         Ok(input_devices) => input_devices,
@@ -145,7 +148,17 @@ fn main() -> anyhow::Result<()> {
     let device_watcher = device_watcher(watch_devices).context("Setting up device watcher")?;
     let config_watcher = config_watcher(watch_config, &config_paths).context("Setting up config watcher")?;
     let watchers: Vec<_> = device_watcher.iter().chain(config_watcher.iter()).collect();
-    let mut handler = EventHandler::new(timer, &config.default_mode, delay, build_client());
+    let signal_dispatcher = event_handler::make_signal_dispatcher(&config);
+    let mut handler = EventHandler::new(
+        timer,
+        signal_timer,
+        &config.default_mode,
+        delay,
+        build_client(),
+        signal_dispatcher,
+        config.compiled_patterns.clone(),
+        config.pattern_start_table.clone(),
+    );
     let vendor = u16::from_str_radix(vendor.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x1234);
     let product = u16::from_str_radix(product.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x5678);
     let output_device = match output_device(
@@ -162,12 +175,18 @@ fn main() -> anyhow::Result<()> {
     // Main loop
     loop {
         match 'event_loop: loop {
-            let readable_fds = select_readable(input_devices.values(), &watchers, timer_fd)?;
+            let readable_fds = select_readable(input_devices.values(), &watchers, &[timer_fd, signal_timer_fd])?;
             if readable_fds.contains(timer_fd) {
                 if let Err(error) =
                     handle_events(&mut handler, &mut dispatcher, &mut config, vec![Event::OverrideTimeout])
                 {
                     println!("Error on remap timeout: {error}")
+                }
+            }
+            if readable_fds.contains(signal_timer_fd) {
+                if let Err(error) = handle_events(&mut handler, &mut dispatcher, &mut config, vec![Event::SignalTimeout])
+                {
+                    println!("Error on signal timeout: {error}")
                 }
             }
 
@@ -216,6 +235,7 @@ fn main() -> anyhow::Result<()> {
                 if let Ok(c) = load_configs(&config_paths) {
                     println!("Reloading Config");
                     config = c;
+                    handler.reload_from_config(&config).ok();
                 }
             }
         }
@@ -225,10 +245,12 @@ fn main() -> anyhow::Result<()> {
 fn select_readable<'a>(
     devices: impl Iterator<Item = &'a InputDevice>,
     watchers: &[&Inotify],
-    timer_fd: RawFd,
+    timer_fds: &[RawFd],
 ) -> anyhow::Result<FdSet> {
     let mut read_fds = FdSet::new();
-    read_fds.insert(timer_fd);
+    for fd in timer_fds {
+        read_fds.insert(*fd);
+    }
     for device in devices {
         read_fds.insert(device.as_raw_fd());
     }

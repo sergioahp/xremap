@@ -7,6 +7,7 @@ pub mod keymap_action;
 mod modmap;
 pub mod modmap_action;
 pub mod signal;
+pub use key::{parse_key, DISGUISED_EVENT_OFFSETTER, KEY_MATCH_ANY};
 
 pub mod remap;
 #[cfg(test)]
@@ -15,6 +16,7 @@ mod tests;
 extern crate serde_yaml;
 extern crate toml;
 
+use crate::pattern::{compile_patterns, edge_key, CompiledPattern};
 use evdev::KeyCode as Key;
 use keymap::Keymap;
 use modmap::Modmap;
@@ -27,12 +29,7 @@ use std::{
     time::SystemTime,
 };
 
-use self::{
-    key::parse_key,
-    keymap::{build_keymap_table, KeymapEntry},
-    keymap_action::KeymapAction,
-    signal::parse_signal_bindings,
-};
+use self::{keymap::{build_keymap_table, KeymapEntry}, keymap_action::KeymapAction, signal::parse_signal_bindings};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +41,8 @@ pub struct Config {
     pub keymap: Vec<Keymap>,
     #[serde(default = "HashMap::new")]
     pub signals: HashMap<String, signal::SignalBindingConfig>,
+    #[serde(default = "HashMap::new")]
+    pub patterns: HashMap<String, String>,
     #[serde(default = "default_mode")]
     pub default_mode: String,
     #[serde(deserialize_with = "deserialize_virtual_modifiers", default = "Vec::new")]
@@ -66,6 +65,10 @@ pub struct Config {
     pub enable_wheel: bool,
     #[serde(skip)]
     pub signal_bindings: HashMap<String, (Vec<KeymapAction>, Option<std::time::Duration>)>,
+    #[serde(skip)]
+    pub compiled_patterns: Vec<CompiledPattern>,
+    #[serde(skip)]
+    pub pattern_start_table: HashMap<(Key, bool), Vec<usize>>,
 }
 
 enum ConfigFiletype {
@@ -106,6 +109,7 @@ pub fn load_configs(filenames: &[PathBuf]) -> Result<Config, Box<dyn error::Erro
         config.keymap.extend(c.keymap);
         config.virtual_modifiers.extend(c.virtual_modifiers);
         config.signals.extend(c.signals);
+        config.patterns.extend(c.patterns);
     }
 
     // Timestamp for --watch=config
@@ -115,6 +119,16 @@ pub fn load_configs(filenames: &[PathBuf]) -> Result<Config, Box<dyn error::Erro
     config.keymap_table = build_keymap_table(&config.keymap);
     // Prepare signal bindings (runtime form)
     config.signal_bindings = parse_signal_bindings(config.signals.clone());
+    // Compile patterns
+    let compiled = compile_patterns(&config.patterns)?;
+    let mut table: HashMap<(Key, bool), Vec<usize>> = HashMap::new();
+    for (idx, pat) in compiled.iter().enumerate() {
+        for edge in &pat.start_edges {
+            table.entry(edge_key(edge)).or_default().push(idx);
+        }
+    }
+    config.pattern_start_table = table;
+    config.compiled_patterns = compiled;
 
     Ok(config)
 }

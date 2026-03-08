@@ -1,14 +1,17 @@
 use crate::action::Action;
 use crate::client::WMClient;
 use crate::config::application::OnlyOrNot;
+use crate::config::{DISGUISED_EVENT_OFFSETTER, KEY_MATCH_ANY};
 use crate::config::key_press::{KeyPress, Modifier};
 use crate::config::keymap::{build_override_table, OverrideEntry};
 use crate::config::keymap_action::KeymapAction;
 use crate::config::modmap_action::{Keys, ModmapAction, MultiPurposeKey, PressReleaseKey};
 use crate::config::remap::Remap;
+use crate::pattern::ast::{ActionSpec, Edge};
 use crate::device::InputDeviceInfo;
 use crate::event::{Event, KeyEvent, RelativeEvent};
-use crate::{config, Config};
+use crate::signal::{Signal, SignalBinding, SignalDispatcher};
+use crate::config::{self, Config};
 use evdev::KeyCode as Key;
 use lazy_static::lazy_static;
 use log::debug;
@@ -18,16 +21,6 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::time::{Duration, Instant};
-
-// This const is a value used to offset RELATIVE events' scancodes
-// so that they correspond to the custom aliases created in config::key::parse_key.
-// This offset also prevents resulting scancodes from corresponding to non-Xremap scancodes,
-// to prevent conflating disguised relative events with other events.
-pub const DISGUISED_EVENT_OFFSETTER: u16 = 59974;
-
-// This const is defined a keycode for a configuration key used to match any key.
-// It's the offset of XHIRES_LEFTSCROLL + 1
-pub const KEY_MATCH_ANY: Key = Key(DISGUISED_EVENT_OFFSETTER + 26);
 
 pub struct EventHandler {
     // Currently pressed modifier keys
@@ -48,6 +41,8 @@ pub struct EventHandler {
     override_timeout_key: Option<Vec<Key>>,
     // Trigger a timeout of nested remaps through select(2)
     override_timer: TimerFd,
+    // Timer for signal repeats
+    signal_timer: TimerFd,
     // { set_mode: String }
     mode: String,
     // { set_mark: true }
@@ -58,6 +53,12 @@ pub struct EventHandler {
     keypress_delay: Duration,
     // Buffered actions to be dispatched. TODO: Just return actions from each function instead of using this.
     actions: Vec<Action>,
+    // State machine patterns
+    signal_dispatcher: crate::signal::SignalDispatcher,
+    active_patterns: Vec<ActivePattern>,
+    pattern_start_table: std::collections::HashMap<(Key, bool), Vec<usize>>,
+    compiled_patterns: Vec<crate::pattern::CompiledPattern>,
+    next_signal_due: Option<Instant>,
 }
 
 struct TaggedAction {
@@ -65,8 +66,23 @@ struct TaggedAction {
     exact_match: bool,
 }
 
+#[derive(Debug)]
+struct ActivePattern {
+    id: usize,
+    machine: crate::pattern::nfa::Machine,
+}
+
 impl EventHandler {
-    pub fn new(timer: TimerFd, mode: &str, keypress_delay: Duration, application_client: WMClient) -> EventHandler {
+    pub fn new(
+        timer: TimerFd,
+        signal_timer: TimerFd,
+        mode: &str,
+        keypress_delay: Duration,
+        application_client: WMClient,
+        signal_dispatcher: SignalDispatcher,
+        compiled_patterns: Vec<crate::pattern::CompiledPattern>,
+        pattern_start_table: std::collections::HashMap<(Key, bool), Vec<usize>>,
+    ) -> EventHandler {
         EventHandler {
             modifiers: HashSet::new(),
             extra_modifiers: HashSet::new(),
@@ -78,12 +94,28 @@ impl EventHandler {
             override_remaps: vec![],
             override_timeout_key: None,
             override_timer: timer,
+            signal_timer,
             mode: mode.to_string(),
             mark_set: false,
             escape_next_key: false,
             keypress_delay,
             actions: vec![],
+            signal_dispatcher,
+            active_patterns: vec![],
+            pattern_start_table,
+            compiled_patterns,
+            next_signal_due: None,
         }
+    }
+
+    pub fn reload_from_config(&mut self, config: &Config) -> Result<(), Box<dyn Error>> {
+        self.signal_dispatcher = make_signal_dispatcher(config);
+        self.compiled_patterns = config.compiled_patterns.clone();
+        self.pattern_start_table = config.pattern_start_table.clone();
+        self.active_patterns.clear();
+        self.signal_dispatcher.stop_all();
+        self.schedule_signal_timer(None, Instant::now())?;
+        Ok(())
     }
 
     // Handle an Event and return Actions. This should be the only public method of EventHandler.
@@ -101,6 +133,7 @@ impl EventHandler {
 
                 Event::OtherEvents(event) => self.send_action(Action::InputEvent(*event)),
                 Event::OverrideTimeout => self.timeout_override()?,
+                Event::SignalTimeout => self.timeout_signals()?,
             };
         }
         // if there is at least one mouse movement event, sending all of them as one MouseMovementEventCollection
@@ -139,6 +172,15 @@ impl EventHandler {
         let mut send_original_relative_event = false;
         // Apply keymap
         for (key, value) in key_values.into_iter() {
+            let edge = if value == RELEASE {
+                Edge::Release(key)
+            } else {
+                Edge::Press(key)
+            };
+            if self.process_patterns(&edge)? {
+                continue;
+            }
+
             if config.virtual_modifiers.contains(&key) {
                 self.update_modifier(key, value);
                 continue;
@@ -263,6 +305,14 @@ impl EventHandler {
         self.remove_override()
     }
 
+    fn timeout_signals(&mut self) -> Result<(), Box<dyn Error>> {
+        let now = Instant::now();
+        let (actions, next) = self.signal_dispatcher.tick(now);
+        self.dispatch_signal_actions(actions)?;
+        self.schedule_signal_timer(next, now)?;
+        Ok(())
+    }
+
     fn remove_override(&mut self) -> Result<(), Box<dyn Error>> {
         self.override_timer.unset()?;
         self.override_remaps.clear();
@@ -284,6 +334,30 @@ impl EventHandler {
 
     fn send_action(&mut self, action: Action) {
         self.actions.push(action);
+    }
+
+    fn dispatch_signal_actions(&mut self, actions: Vec<KeymapAction>) -> Result<(), Box<dyn Error>> {
+        for action in actions {
+            let tagged = TaggedAction {
+                action,
+                exact_match: false,
+            };
+            self.dispatch_action(&tagged, &KEY_MATCH_ANY)?;
+        }
+        Ok(())
+    }
+
+    fn schedule_signal_timer(&mut self, next: Option<Duration>, now: Instant) -> Result<(), Box<dyn Error>> {
+        if let Some(duration) = next {
+            let expiration = Expiration::OneShot(TimeSpec::from_duration(duration));
+            self.signal_timer.unset()?;
+            self.signal_timer.set(expiration, TimerSetTimeFlags::empty())?;
+            self.next_signal_due = Some(now + duration);
+        } else {
+            self.signal_timer.unset()?;
+            self.next_signal_due = None;
+        }
+        Ok(())
     }
 
     // Repeat/Release what's originally pressed even if remapping changes while holding it
@@ -739,6 +813,93 @@ impl EventHandler {
             self.modifiers.remove(&key);
         }
     }
+
+    fn process_patterns(&mut self, edge: &Edge) -> Result<bool, Box<dyn Error>> {
+        let mut consumed = false;
+        let mut signals: Vec<Signal> = vec![];
+        let mut next_active: Vec<ActivePattern> = vec![];
+
+        for mut pat in self.active_patterns.drain(..) {
+            let res = pat.machine.step(edge);
+            if res.alive || !res.actions.is_empty() {
+                consumed = true;
+            }
+            let (sig, ended) = signals_from_actions(res.actions);
+            signals.extend(sig);
+            if res.alive && !ended {
+                next_active.push(pat);
+            } else {
+                self.signal_dispatcher.stop_all();
+            }
+        }
+
+        let key = match edge {
+            Edge::Press(k) | Edge::Release(k) => *k,
+        };
+        let is_release = matches!(edge, Edge::Release(_));
+        if let Some(ids) = self.pattern_start_table.get(&(key, is_release)) {
+            let start_ids = ids.clone();
+            for id in start_ids {
+                if let Some(pat) = self.compiled_patterns.get(id) {
+                    let mut machine = pat.machine();
+                    let res = machine.step(edge);
+                    if res.alive || !res.actions.is_empty() {
+                        consumed = true;
+                    }
+                    let (sig, ended) = signals_from_actions(res.actions);
+                    signals.extend(sig);
+                    if res.alive && !ended {
+                        next_active.push(ActivePattern { id, machine });
+                    } else {
+                        self.signal_dispatcher.stop_all();
+                    }
+                }
+            }
+        }
+
+        self.active_patterns = next_active;
+
+        if !signals.is_empty() || self.signal_dispatcher.has_repeats() {
+            let now = Instant::now();
+            let actions = self.signal_dispatcher.handle_signals(signals, now);
+            self.dispatch_signal_actions(actions)?;
+            let next_due = self.signal_dispatcher.next_due();
+            let delay = next_due.map(|due| due.saturating_duration_since(now));
+            self.schedule_signal_timer(delay, now)?;
+        }
+
+        Ok(consumed)
+    }
+
+}
+
+pub(crate) fn make_signal_dispatcher(config: &Config) -> SignalDispatcher {
+    let mut map = std::collections::HashMap::new();
+    for (name, (actions, repeat)) in &config.signal_bindings {
+        map.insert(
+            name.clone(),
+            SignalBinding {
+                actions: actions.clone(),
+                repeat: *repeat,
+            },
+        );
+    }
+    SignalDispatcher::new(map)
+}
+
+fn signals_from_actions(specs: Vec<ActionSpec>) -> (Vec<Signal>, bool) {
+    let mut signals = vec![];
+    let mut ended = false;
+    for spec in specs {
+        match spec {
+            ActionSpec::Emit(name, kind) => signals.push(Signal { name, kind }),
+            ActionSpec::Noop => {}
+            ActionSpec::End => {
+                ended = true;
+            }
+        }
+    }
+    (signals, ended)
 }
 
 fn is_remap(actions: &[KeymapAction]) -> bool {

@@ -102,5 +102,49 @@ impl SignalDispatcher {
     pub fn has_repeats(&self) -> bool {
         !self.repeats.is_empty()
     }
+
+    pub fn next_due(&self) -> Option<Instant> {
+        self.repeats.values().map(|r| r.next_due).min()
+    }
+
+    pub fn stop_all(&mut self) {
+        self.repeats.clear();
+    }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::keymap_action::KeymapAction;
+
+    #[test]
+    fn start_and_stop_repeat() {
+        let mut dispatcher = SignalDispatcher::new(HashMap::from([(
+            "nav.left".into(),
+            SignalBinding {
+                actions: vec![KeymapAction::EscapeNextKey(false)],
+                repeat: Some(Duration::from_millis(10)),
+            },
+        )]));
+        let now = Instant::now();
+        let actions = dispatcher.handle_signals(
+            vec![Signal {
+                name: "nav.left".into(),
+                kind: SignalKind::StartRepeat,
+            }],
+            now,
+        );
+        assert_eq!(actions.len(), 1);
+        let (tick_actions, next) = dispatcher.tick(now + Duration::from_millis(10));
+        assert_eq!(tick_actions.len(), 1);
+        assert!(next.is_some());
+        dispatcher.handle_signals(
+            vec![Signal {
+                name: "nav.left".into(),
+                kind: SignalKind::StopRepeat,
+            }],
+            now,
+        );
+        assert!(!dispatcher.has_repeats());
+    }
+}

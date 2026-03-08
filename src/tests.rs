@@ -120,7 +120,7 @@ fn test_relative_events() {
 
 #[test]
 fn verify_disguised_relative_events() {
-    use crate::event_handler::DISGUISED_EVENT_OFFSETTER;
+    use crate::config::DISGUISED_EVENT_OFFSETTER;
     // Verifies that the event offsetter used to "disguise" relative events into key event
     // is a bigger number than the biggest one a scancode had at the time of writing this (26 december 2022)
     const _: () = assert!(0x2e7 < DISGUISED_EVENT_OFFSETTER);
@@ -789,11 +789,17 @@ pub fn assert_actions_with_current_application(
     let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
     let mut config: Config = serde_yaml::from_str(config_yaml).unwrap();
     config.keymap_table = build_keymap_table(&config.keymap);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let dispatcher = crate::signal::SignalDispatcher::new(std::collections::HashMap::new());
     let mut event_handler = EventHandler::new(
         timer,
+        signal_timer,
         "default",
         Duration::from_micros(0),
         WMClient::new("static", Box::new(StaticClient { current_application })),
+        dispatcher,
+        vec![],
+        std::collections::HashMap::new(),
     );
     let mut actual: Vec<Action> = vec![];
 

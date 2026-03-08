@@ -1,4 +1,4 @@
-use crate::Config;
+use crate::config::Config;
 use indoc::indoc;
 
 extern crate serde_yaml;
