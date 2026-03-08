@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::net::UnixDatagram;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use serde_json;
 
 #[derive(Debug, Deserialize)]
 struct SocketMessage {
@@ -32,6 +34,8 @@ impl SocketWorker {
             let _ = fs::remove_file(&path);
         }
         let sock = UnixDatagram::bind(&path)?;
+        // Make socket world-writeable so external helpers can send without perms issues.
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o666));
         let controllers: Arc<Mutex<HashMap<String, Controller>>> = Arc::new(Mutex::new(HashMap::new()));
 
         // Receiver thread
@@ -46,15 +50,20 @@ impl SocketWorker {
                         match msg.action.as_str() {
                             "start" => {
                                 let now = Instant::now();
-                                map.insert(
-                                    msg.id.clone(),
-                                    Controller {
-                                        command: msg.command,
-                                        velocity: 0.0,
-                                        next_tick: now,
-                                        last_heartbeat: now,
-                                    },
-                                );
+                                if let Some(ctrl) = map.get_mut(&msg.id) {
+                                    // Treat duplicate start as heartbeat; don't reset velocity.
+                                    ctrl.last_heartbeat = now;
+                                } else {
+                                    map.insert(
+                                        msg.id.clone(),
+                                        Controller {
+                                            command: msg.command,
+                                            velocity: 0.0,
+                                            next_tick: now,
+                                            last_heartbeat: now,
+                                        },
+                                    );
+                                }
                             }
                             "stop" => {
                                 map.remove(&msg.id);
@@ -105,4 +114,3 @@ pub fn send_to_socket(path: &str, msg: &str) {
         let _ = sock.send_to(msg.as_bytes(), path);
     }
 }
-

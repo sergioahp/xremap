@@ -679,6 +679,7 @@ impl EventHandler {
             }
             KeymapAction::SocketSend(payload) => {
                 if let Some(path) = &self.socket_path {
+                    debug!("socket_send -> {} : {}", path, payload);
                     send_to_socket(path, payload);
                 }
             }

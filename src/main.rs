@@ -30,6 +30,7 @@ mod event_handler;
 mod pattern;
 mod signal;
 mod socket_worker;
+use crate::socket_worker::SocketWorker;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -150,6 +151,11 @@ fn main() -> anyhow::Result<()> {
     let config_watcher = config_watcher(watch_config, &config_paths).context("Setting up config watcher")?;
     let watchers: Vec<_> = device_watcher.iter().chain(config_watcher.iter()).collect();
     let signal_dispatcher = event_handler::make_signal_dispatcher(&config);
+    let _socket_worker = if let Some(path) = &config.socket_path_runtime {
+        Some(SocketWorker::start(path.clone())?)
+    } else {
+        None
+    };
     let mut handler = EventHandler::new(
         timer,
         signal_timer,

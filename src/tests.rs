@@ -801,6 +801,7 @@ pub fn assert_actions_with_current_application(
         dispatcher,
         vec![],
         std::collections::HashMap::new(),
+        None,
     );
     let mut actual: Vec<Action> = vec![];
 
@@ -834,6 +835,7 @@ fn test_pattern_emit_signal_actions() {
         dispatcher,
         config.compiled_patterns.clone(),
         config.pattern_start_table.clone(),
+        config.socket_path_runtime.clone(),
     );
 
     let actions = handler
