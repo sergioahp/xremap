@@ -19,8 +19,10 @@ struct SocketMessage {
 
 struct Controller {
     command: Vec<String>,
-    velocity: f32,
-    next_tick: Instant,
+    rate: f32,          // current commands per second
+    target_rate: f32,   // desired steady-state rate
+    acc: f32,           // fractional accumulator for sends
+    last_tick: Instant, // time of last tick update
     last_heartbeat: Instant,
 }
 
@@ -58,8 +60,10 @@ impl SocketWorker {
                                         msg.id.clone(),
                                         Controller {
                                             command: msg.command,
-                                            velocity: 0.0,
-                                            next_tick: now,
+                                            rate: 0.0,
+                                            target_rate: 30.0, // cmds/sec
+                                            acc: 0.0,
+                                            last_tick: now,
                                             last_heartbeat: now,
                                         },
                                     );
@@ -91,10 +95,13 @@ impl SocketWorker {
                     let now = Instant::now();
                     map.retain(|_, ctrl| now.duration_since(ctrl.last_heartbeat) < Duration::from_millis(200));
                     for ctrl in map.values_mut() {
-                        if now >= ctrl.next_tick {
-                            ctrl.velocity = (ctrl.velocity + 0.2).min(1.0);
-                            let interval = Duration::from_millis((80.0 - 60.0 * ctrl.velocity) as u64);
-                            ctrl.next_tick = now + interval;
+                        let dt = now.duration_since(ctrl.last_tick).as_secs_f32();
+                        ctrl.last_tick = now;
+                        // Exponential easing toward target_rate
+                        ctrl.rate += (ctrl.target_rate - ctrl.rate) * 0.18;
+                        ctrl.acc += ctrl.rate * dt;
+                        while ctrl.acc >= 1.0 {
+                            ctrl.acc -= 1.0;
                             to_run.push(ctrl.command.clone());
                         }
                     }
