@@ -12,12 +12,12 @@ Non-goals
 - No hidden behaviour tied to specific pattern names; everything must be driven by config.
 - Do not change existing keymap/remap behaviour or syntax unless the new DSL is invoked.
 
-High-level architecture
------------------------
-1) **Matcher (state machine engine)** lives in `EventHandler`, before normal keymap lookup. It parses DSL patterns into NFAs and drives them with incoming key press/release events.
-2) **Signals**: Matcher emits lightweight `Signal { name: String, kind: Fire | StartRepeat | StopRepeat, repeat: Option<RepeatSpec> }`.
-3) **Signal dispatcher**: New module (likely `signal_dispatcher.rs`) that consumes signals, looks up user-defined bindings, and pushes existing `Action`s (commands, key events, delays) into the `Action` queue.
-4) **Repeat scheduler**: Shared small scheduler using the existing timerfd to trigger repeat actions at configured intervals until a StopRepeat arrives or the pattern exits.
+High-level architecture (current state)
+---------------------------------------
+1) **Matcher (state machine engine)** implemented: DSL → AST → NFA; runs inside `EventHandler` before normal keymap lookup.
+2) **Signals**: DSL actions produce `Signal { name, kind: Fire | StartRepeat | StopRepeat }`.
+3) **Signal dispatcher**: Implemented (`src/signal.rs`). Maps signals to user `signals:` bindings (actions + optional repeat interval) and injects those actions into the normal `Action` queue.
+4) **Repeat scheduler**: Implemented. Uses the existing timerfd (now dual-purpose) to drive repeats until `StopRepeat` or pattern exit.
 
 DSL sketch (regex-inspired)
 ---------------------------
@@ -99,36 +99,16 @@ Edge cases to handle
 
 Roadmap (kept up-to-date while iterating)
 -----------------------------------------
-1) **Baseline & tooling**
-   - Duplicate flake and confirm `nix build` (done).
-   - Run `cargo test` to establish a clean baseline (done).
-2) **Config & parsing**
-   - Add `patterns:` and `signals:` sections to config schema.
-   - Implement DSL parser (Pratt or small recursive-descent) to AST; compile to NFA.
-   - Unit tests for parsing and NFA construction.
-3) **Signal layer**
-   - Define `Signal` and `SignalBinding` structs.
-   - Implement dispatcher that maps signals to actions and manages repeat schedules.
-   - Tests: start/stop repeat; undefined signal; multiple signals.
-4) **Matcher runtime**
-   - Integrate into `EventHandler`: activation, stepping, noise handling, end_on, timeouts.
-   - Ensure existing remap/keymap paths stay unchanged when no patterns active.
-   - Tests: golden event sequences for nav example, Super+g example, timeout abort, noise branch.
-5) **Timer integration**
-   - Extend timerfd loop to handle both override timeouts and signal repeats (min-heap of next expirations).
-   - Tests: repeat cadence within tolerance.
-6) **Docs & examples**
-   - Add README section with DSL examples (regex style only).
-   - Provide sample config showing signals mapping to commands (no hard-coded names in code).
-7) **Polish**
-   - Logging, error messages, config validation.
-   - Benchmarks/quick perf sanity if needed.
-8) **Cleanup**
-   - Remove temporary scaffolding; ensure formatting and clippy.
-   - Update design doc if plan adjusted; keep roadmap section accurate.
+1) **Baseline & tooling** — done (nix build, cargo test).
+2) **Config & parsing** — done: `patterns:` and `signals:`, parser+NFA, parser unit test.
+3) **Signal layer** — done: dispatcher with repeat scheduling, dispatcher unit test.
+4) **Matcher runtime** — initial integration done (patterns run before keymap). TODO: timeouts (`~Xms`), explicit `end_on` sugar (currently use `=> end`), nicer noise sugar (currently use `noop` branch).
+5) **Timer integration** — done: signal repeats share timerfd; event loop handles `SignalTimeout`.
+6) **Docs & examples** — TODO: user-facing README section + sample configs wired to signals.
+7) **Polish** — TODO: better errors/logging, config validation, reduce dead-code warnings.
+8) **Tests** — added parser + signal dispatcher + minimal pattern→signal integration test; still need golden nav / Super+g sequences and timeout abort coverage.
 
 Notes for future tweaks
 -----------------------
 - If the timerfd multiplexing gets messy, we can create a dedicated repeat scheduler thread, but initial plan is single timerfd.
 - If users request, we can add a block-y syntax later, but we’ll keep the primary DSL as the regex-ish inline form.
-

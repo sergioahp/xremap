@@ -5,6 +5,7 @@ use indoc::indoc;
 use nix::sys::timerfd::{ClockId, TimerFd, TimerFlags};
 use std::path::Path;
 use std::time::Duration;
+use std::{fs, path::PathBuf};
 
 use crate::client::{Client, WMClient};
 use crate::device::InputDeviceInfo;
@@ -12,7 +13,7 @@ use crate::{
     action::Action,
     config::{keymap::build_keymap_table, Config},
     event::{Event, KeyEvent, KeyValue, RelativeEvent},
-    event_handler::EventHandler,
+    event_handler::{make_signal_dispatcher, EventHandler},
 };
 
 struct StaticClient {
@@ -806,4 +807,71 @@ pub fn assert_actions_with_current_application(
     actual.append(&mut event_handler.on_events(&events, &config).unwrap());
 
     assert_eq!(format!("{actions:?}"), format!("{:?}", actual));
+}
+
+#[test]
+fn test_pattern_emit_signal_actions() {
+    let yaml = indoc! {"
+    signals:
+      repeat.left:
+        repeat: false
+        actions:
+          - { press: b }
+    patterns:
+      Nav: \"a => emit_start(repeat.left) a! => emit_stop(repeat.left)\"
+    "};
+    let path = write_temp_config(yaml);
+    let mut config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let dispatcher = make_signal_dispatcher(&config);
+    let mut handler = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.compiled_patterns.clone(),
+        config.pattern_start_table.clone(),
+    );
+
+    let actions = handler
+        .on_events(
+            &vec![Event::KeyEvent(
+                get_input_device_info(),
+                KeyEvent::new(Key::KEY_A, KeyValue::Press),
+            )],
+            &config,
+        )
+        .unwrap();
+    assert!(actions
+        .iter()
+        .any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_B && k.value() == 1)));
+
+    let actions2 = handler
+        .on_events(
+            &vec![Event::KeyEvent(
+                get_input_device_info(),
+                KeyEvent::new(Key::KEY_A, KeyValue::Release),
+            )],
+            &config,
+        )
+        .unwrap();
+    assert!(actions2.is_empty());
+
+    let _ = fs::remove_file(path);
+}
+
+fn write_temp_config(yaml: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "xremap-pattern-test-{}.yml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(&path, yaml).expect("write temp config");
+    path
 }
