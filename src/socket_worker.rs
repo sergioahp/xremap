@@ -142,5 +142,10 @@ fn send_scaled_cmd(cmd: &Vec<String>, scale: f32) {
             scaled.push(arg.clone());
         }
     }
-    let _ = std::process::Command::new(&scaled[0]).args(&scaled[1..]).spawn();
+    let _ = std::process::Command::new(&scaled[0])
+        .args(&scaled[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
