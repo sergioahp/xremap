@@ -1,4 +1,3 @@
-# Minimal config for socket-driven hyperctl navigation & resize with acceleration curves
 socket_path: /tmp/xremap-nav.sock
 
 signals:
@@ -8,25 +7,24 @@ signals:
 
   move.left:
     repeat: true
-    interval_ms: 50
+    interval_ms: 5
     actions:
       - socket_send: '{"action":"start","id":"move.left","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","moveactive","-30","0"]}'
   move.right:
     repeat: true
-    interval_ms: 50
+    interval_ms: 5
     actions:
       - socket_send: '{"action":"start","id":"move.right","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","moveactive","30","0"]}'
   move.up:
     repeat: true
-    interval_ms: 50
+    interval_ms: 5
     actions:
       - socket_send: '{"action":"start","id":"move.up","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","moveactive","0","-30"]}'
   move.down:
     repeat: true
-    interval_ms: 50
+    interval_ms: 5
     actions:
       - socket_send: '{"action":"start","id":"move.down","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","moveactive","0","30"]}'
-
   move.stop:
     actions:
       - socket_send: '{"action":"stop","id":"move.left"}'
@@ -36,34 +34,580 @@ signals:
 
   resize.left:
     repeat: true
-    interval_ms: 50
+    interval_ms: 5
     actions:
       - socket_send: '{"action":"start","id":"resize.left","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","-20","0"]}'
   resize.right:
     repeat: true
-    interval_ms: 50
+    interval_ms: 5
     actions:
       - socket_send: '{"action":"start","id":"resize.right","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","20","0"]}'
   resize.up:
     repeat: true
-    interval_ms: 50
+    interval_ms: 5
     actions:
       - socket_send: '{"action":"start","id":"resize.up","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","0","-20"]}'
   resize.down:
     repeat: true
-    interval_ms: 50
+    interval_ms: 5
     actions:
       - socket_send: '{"action":"start","id":"resize.down","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","0","20"]}'
-
   resize.stop:
     actions:
       - socket_send: '{"action":"stop","id":"resize.left"}'
       - socket_send: '{"action":"stop","id":"resize.right"}'
       - socket_send: '{"action":"stop","id":"resize.up"}'
       - socket_send: '{"action":"stop","id":"resize.down"}'
-patterns:
-  Move: "Super_L d => emit(float.enable) ( d!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) ε => emit(move.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) ε => emit(move.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) ε => emit(move.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) ε => emit(move.stop) | d! => noop )* end_on(Super_L!) => emit(move.stop)"
-  Resize: "Super_L u => emit(float.enable) ( u!|ε ) ( h => emit_start(resize.left) | h! => emit_stop(resize.left) ε => emit(resize.stop) | j => emit_start(resize.down) | j! => emit_stop(resize.down) ε => emit(resize.stop) | k => emit_start(resize.up) | k! => emit_stop(resize.up) ε => emit(resize.stop) | l => emit_start(resize.right) | l! => emit_stop(resize.right) ε => emit(resize.stop) | u! => noop )* end_on(Super_L!) => emit(resize.stop)"
 
-keymap: []
-modmap: []
+# Super+W held → float window, then hold H/J/K/L to move it smoothly (release Super to stop)
+# Super+R held → hold H/J/K/L to resize active window smoothly (works on tiled too)
+patterns:
+  Move: "Super_L w => emit(float.enable) ( w!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) ε => emit(move.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) ε => emit(move.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) ε => emit(move.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) ε => emit(move.stop) | w! => noop )* end_on(Super_L!) => emit(move.stop)"
+  Resize: "Super_L r => noop ( r!|ε ) ( h => emit_start(resize.left) | h! => emit_stop(resize.left) ε => emit(resize.stop) | j => emit_start(resize.down) | j! => emit_stop(resize.down) ε => emit(resize.stop) | k => emit_start(resize.up) | k! => emit_stop(resize.up) ε => emit(resize.stop) | l => emit_start(resize.right) | l! => emit_stop(resize.right) ε => emit(resize.stop) | r! => noop )* end_on(Super_L!) => emit(resize.stop)"
+
+keymap:
+- name: main remaps
+  remap:
+    super-comma:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - focusmonitor
+      - '+1'
+    super-d:
+      remap:
+        super-c:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - killactive
+        super-comma:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - fullscreenstate
+          - '1'
+        super-f:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - fullscreen
+        super-g:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - focusurgentorlast
+        super-j:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - swapnext
+        super-k:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - swapnext
+          - prev
+        super-m:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movewindow
+          - mon:+1
+        super-p:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - swapactiveworkspaces
+          - '0'
+          - '1'
+        super-s:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - layoutmsg
+          - swapsplit
+        super-t:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - layoutmsg
+          - togglesplit
+        super-u:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - togglefloating
+    super-dot:
+      remap:
+        super-c:
+          launch:
+          - /nix/store/ay4qg8nswwz9vq1a86b8lx0i5g5vmyva-hyprvoice-0.1.8/bin/hyprvoice
+          - cancel
+        super-dot:
+          launch:
+          - /nix/store/ay4qg8nswwz9vq1a86b8lx0i5g5vmyva-hyprvoice-0.1.8/bin/hyprvoice
+          - toggle
+    super-e:
+      remap:
+        super-comma:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '10'
+        super-i:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '2'
+        super-j:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '5'
+        super-k:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '6'
+        super-l:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '7'
+        super-m:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '9'
+        super-o:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '3'
+        super-p:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '4'
+        super-semicolon:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '8'
+        super-u:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspacesilent
+          - '1'
+    super-f:
+      remap:
+        super-comma:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '10'
+        super-i:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '2'
+        super-j:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '5'
+        super-k:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '6'
+        super-l:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '7'
+        super-m:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '9'
+        super-o:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '3'
+        super-p:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '4'
+        super-semicolon:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '8'
+        super-u:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - workspace
+          - '1'
+    super-i:
+      launch:
+      - /nix/store/8x04isf9xk85l66sfxv1k31j5hbf2kng-wireplumber-0.5.13/bin/wpctl
+      - set-volume
+      - '@DEFAULT_AUDIO_SINK@'
+      - 5%-
+    super-j:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - cyclenext
+    super-k:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - cyclenext
+      - prev
+    super-m:
+      remap:
+        super-e:
+          launch:
+          - /nix/store/4xnh2qv65a5f8m51n6x3dv1nb223gsrb-uwsm-0.26.1/bin/uwsm-app
+          - --
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - --
+          - exec
+          - /nix/store/yr0dp7p6z3dksx7z1m3zgngixvl6pf1n-kitty-extended-0.0.1/bin/kitty
+          - /nix/store/j6hhhpf9wjdqmf9zh9ldpkhl3518sy8v-yazi-26.1.22/bin/yazi
+        super-f:
+          launch:
+          - /nix/store/4xnh2qv65a5f8m51n6x3dv1nb223gsrb-uwsm-0.26.1/bin/uwsm-app
+          - --
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - --
+          - exec
+          - /nix/store/vpqwalxgaqi87c3ph1kxj4dkkw3dczh0-firefox-147.0.4/bin/firefox
+        super-i:
+          launch:
+          - /nix/store/4xnh2qv65a5f8m51n6x3dv1nb223gsrb-uwsm-0.26.1/bin/uwsm-app
+          - --
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - --
+          - exec
+          - /nix/store/yi341zkcfvl7f9rscng9xl7wccxw4aqf-bitwarden-desktop-2025.12.0/bin/bitwarden
+        super-k:
+          launch:
+          - /nix/store/vdb7yxmj6xxxdhfjzn3w9m92wnj3i24f-quick-start-0.1.0/bin/quick-start
+        super-l:
+          launch:
+          - /nix/store/4xnh2qv65a5f8m51n6x3dv1nb223gsrb-uwsm-0.26.1/bin/uwsm-app
+          - --
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - --
+          - exec
+          - /nix/store/yr0dp7p6z3dksx7z1m3zgngixvl6pf1n-kitty-extended-0.0.1/bin/kitty
+        super-m:
+          launch:
+          - /nix/store/f5wmwybzmkbzhpj9k21nvm2k66cisrd7-rofi-2.0.0/bin/rofi
+          - -show
+          - drun
+          - -run-command
+          - uwsm-app -- hyprctl dispatch exec -- {cmd}
+          - -theme-str
+          - 'window {width: 20%;}'
+        super-o:
+          launch:
+          - /nix/store/4xnh2qv65a5f8m51n6x3dv1nb223gsrb-uwsm-0.26.1/bin/uwsm-app
+          - --
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - --
+          - exec
+          - /nix/store/yr0dp7p6z3dksx7z1m3zgngixvl6pf1n-kitty-extended-0.0.1/bin/kitty
+          - /nix/store/0mzk5q4zn9x7gaar345i3svrk7wwry66-btop-1.4.6/bin/btop
+        super-p:
+          launch:
+          - /nix/store/f5wmwybzmkbzhpj9k21nvm2k66cisrd7-rofi-2.0.0/bin/rofi
+          - -show
+          - power-menu
+          - -modi
+          - power-menu:/nix/store/b16bk9f13n7nrn2dix7xqb4fzrgpqcxl-source/rofi-power-menu
+    super-n:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - workspace
+      - r+1
+    super-o:
+      launch:
+      - /nix/store/8x04isf9xk85l66sfxv1k31j5hbf2kng-wireplumber-0.5.13/bin/wpctl
+      - set-volume
+      - '@DEFAULT_AUDIO_SINK@'
+      - 5%+
+    super-p:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - workspace
+      - r-1
+    super-s:
+      remap:
+        super-c:
+          launch:
+          - /nix/store/ym5j9v7g11zn0fbd5gysmdywdk4yq76z-hyprpicker-0.4.6/bin/hyprpicker
+          - -a
+        super-d:
+          launch:
+          - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
+          - -c
+          - '/nix/store/z99hma7bh38a2r1lzs71rlv1xny4vrkq-grim-1.5.0/bin/grim -g "$(/nix/store/3drs32czrdz2q3j4y8w0h3qgf382zj4l-slurp-1.5.0/bin/slurp
+            -w 0)" - |
+
+            /nix/store/rjr0w9z0g2l2z83awq7cv7wz2cyrc4ab-swappy-1.8.0/bin/swappy -f
+            -
+
+            '
+        super-e:
+          launch:
+          - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
+          - -c
+          - '/nix/store/67lzqabpcabrvlrady7hbd2s4zs08fd1-wl-clipboard-2.2.1/bin/wl-paste
+            --type image/png |
+
+            /nix/store/rjr0w9z0g2l2z83awq7cv7wz2cyrc4ab-swappy-1.8.0/bin/swappy -f
+            -
+
+            '
+    super-semicolon:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - workspace
+      - previous_per_monitor
+    super-slash:
+      remap:
+        super-slash:
+          launch:
+          - /nix/store/47v9bivigrmcln3957fmp4y37pz9msny-xremap-launcher/bin/xremap-launcher
+    super-u:
+      remap:
+        super-c:
+          launch:
+          - /nix/store/rlhxgs0zdka7i6q9cfinxvgyhpk70srq-dunst-1.13.1/bin/dunstctl
+          - action
+        super-d:
+          launch:
+          - /nix/store/rlhxgs0zdka7i6q9cfinxvgyhpk70srq-dunst-1.13.1/bin/dunstctl
+          - close
+        super-e:
+          launch:
+          - /nix/store/rlhxgs0zdka7i6q9cfinxvgyhpk70srq-dunst-1.13.1/bin/dunstctl
+          - context
+        super-f:
+          launch:
+          - /nix/store/rlhxgs0zdka7i6q9cfinxvgyhpk70srq-dunst-1.13.1/bin/dunstctl
+          - history-pop
+        super-i:
+          launch:
+          - /nix/store/rlhxgs0zdka7i6q9cfinxvgyhpk70srq-dunst-1.13.1/bin/dunstctl
+          - set-paused
+          - 'true'
+        super-o:
+          launch:
+          - /nix/store/rlhxgs0zdka7i6q9cfinxvgyhpk70srq-dunst-1.13.1/bin/dunstctl
+          - set-paused
+          - 'false'
+        super-s:
+          launch:
+          - /nix/store/rlhxgs0zdka7i6q9cfinxvgyhpk70srq-dunst-1.13.1/bin/dunstctl
+          - close-all
+        super-t:
+          launch:
+          - /nix/store/rlhxgs0zdka7i6q9cfinxvgyhpk70srq-dunst-1.13.1/bin/dunstctl
+          - set-paused
+          - toggle
+    super-v:
+      remap:
+        super-comma:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '10'
+        super-i:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '2'
+        super-j:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '5'
+        super-k:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '6'
+        super-l:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '7'
+        super-m:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '9'
+        super-o:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '3'
+        super-p:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '4'
+        super-semicolon:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '8'
+        super-u:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - movetoworkspace
+          - '1'
+    super-y:
+      remap:
+        super-d:
+          launch:
+          - /nix/store/q1vmx08s4xwh4djivpvhhkg1wvxc5qnm-playerctl-2.4.1/bin/playerctl
+          - next
+        super-e:
+          launch:
+          - /nix/store/8x04isf9xk85l66sfxv1k31j5hbf2kng-wireplumber-0.5.13/bin/wpctl
+          - set-mute
+          - '@DEFAULT_AUDIO_SINK@'
+          - toggle
+        super-f:
+          launch:
+          - /nix/store/q1vmx08s4xwh4djivpvhhkg1wvxc5qnm-playerctl-2.4.1/bin/playerctl
+          - previous
+        super-s:
+          launch:
+          - /nix/store/q1vmx08s4xwh4djivpvhhkg1wvxc5qnm-playerctl-2.4.1/bin/playerctl
+          - play-pause
+- mode: default
+  name: to normal
+  remap:
+    super-space:
+      set_mode: normal
+- mode: normal
+  name: to default
+  remap:
+    super-space:
+      set_mode: default
+- mode: normal
+  remap:
+    c:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - centerwindow
+    comma:
+      launch:
+      - /nix/store/fpr8wksh9mx77qmyp1dmhna1df5b0ipz-lua-5.2.4/bin/lua
+      - -e
+      - "local handle = io.popen(\"/nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl\
+        \ get\")\nlocal current = tonumber(handle:read(\"*a\"))\nhandle:close()\n\n\
+        local handle_max = io.popen(\"/nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl\
+        \ max\")\nlocal max = tonumber(handle_max:read(\"*a\"))\nhandle_max:close()\n\
+        \nlocal current_percent = (current / max) * 100\n\nif current_percent > 15\
+        \ then\n  os.execute(\"/nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl\
+        \ set 10%-\")\nelseif current_percent > 10 then\n  os.execute(\"/nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl\
+        \ set 10%\")\nend\n"
+    semicolon:
+      launch:
+      - /nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl
+      - set
+      - 10%+
+    shift-comma:
+      launch:
+      - /nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl
+      - set
+      - 10%
+    shift-semicolon:
+      launch:
+      - /nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl
+      - set
+      - 100%
+    shift-x:
+      remap:
+        shift-x:
+          launch:
+          - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+          - dispatch
+          - forcekillactive
+- application:
+    only: firefox
+  name: firefox remaps
+  remap:
+    super-b:
+    - c-l
+    - shift-5
+    - space
+    super-c:
+      remap:
+        super-c: c-alt-z
+        super-i: alt-2
+        super-j: alt-6
+        super-k: alt-7
+        super-l: alt-8
+        super-leftbrace: alt-5
+        super-o: alt-3
+        super-p: alt-4
+        super-semicolon: alt-9
+        super-u: alt-1
+    super-x: c-tab
+    super-z: c-shift-tab
+keypress_delay_ms: 20
+modmap:
+- name: main modmaps
+  remap:
+    shift_r: alt_l
