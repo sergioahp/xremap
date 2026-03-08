@@ -1,10 +1,6 @@
 socket_path: /tmp/xremap-nav.sock
 
 signals:
-  float.enable:
-    actions:
-      - socket_send: '{"action":"start","id":"float.enable","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","setfloating","active"]}'
-
   move.left:
     repeat: true
     interval_ms: 5
@@ -58,12 +54,23 @@ signals:
       - socket_send: '{"action":"stop","id":"resize.right"}'
       - socket_send: '{"action":"stop","id":"resize.up"}'
       - socket_send: '{"action":"stop","id":"resize.down"}'
+  nav.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"move.left"}'
+      - socket_send: '{"action":"stop","id":"move.right"}'
+      - socket_send: '{"action":"stop","id":"move.up"}'
+      - socket_send: '{"action":"stop","id":"move.down"}'
+      - socket_send: '{"action":"stop","id":"resize.left"}'
+      - socket_send: '{"action":"stop","id":"resize.right"}'
+      - socket_send: '{"action":"stop","id":"resize.up"}'
+      - socket_send: '{"action":"stop","id":"resize.down"}'
 
-# Super+W held → float window, then hold H/J/K/L to move it smoothly (release Super to stop)
-# Super+R held → hold H/J/K/L to resize active window smoothly (works on tiled too)
+# Hold Super, tap Space (space can be released), then:
+#   H/J/K/L         → smooth window move   (release Super to stop)
+#   Shift+H/J/K/L   → smooth window resize (release Super to stop)
+# Float manually first with Super+D, Super+U if needed.
 patterns:
-  Move: "Super_L w => emit(float.enable) ( w!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) ε => emit(move.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) ε => emit(move.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) ε => emit(move.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) ε => emit(move.stop) | w! => noop )* end_on(Super_L!) => emit(move.stop)"
-  Resize: "Super_L r => noop ( r!|ε ) ( h => emit_start(resize.left) | h! => emit_stop(resize.left) ε => emit(resize.stop) | j => emit_start(resize.down) | j! => emit_stop(resize.down) ε => emit(resize.stop) | k => emit_start(resize.up) | k! => emit_stop(resize.up) ε => emit(resize.stop) | l => emit_start(resize.right) | l! => emit_stop(resize.right) ε => emit(resize.stop) | r! => noop )* end_on(Super_L!) => emit(resize.stop)"
+  WindowNav: "Super_L space => noop ( space!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) ε => emit_stop(resize.left) ε => emit(nav.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) ε => emit_stop(resize.down) ε => emit(nav.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) ε => emit_stop(resize.up) ε => emit(nav.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) ε => emit_stop(resize.right) ε => emit(nav.stop) | shift_l h => emit_start(resize.left) | shift_l j => emit_start(resize.down) | shift_l k => emit_start(resize.up) | shift_l l => emit_start(resize.right) | shift_l! => noop | space! => noop )* end_on(Super_L!) => emit(nav.stop)"
 
 keymap:
 - name: main remaps
@@ -562,6 +569,34 @@ keymap:
         \ then\n  os.execute(\"/nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl\
         \ set 10%-\")\nelseif current_percent > 10 then\n  os.execute(\"/nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl\
         \ set 10%\")\nend\n"
+    h:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - resizeactive
+      - '-100'
+      - '0'
+    j:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - resizeactive
+      - '0'
+      - '100'
+    k:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - resizeactive
+      - '0'
+      - '-100'
+    l:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - resizeactive
+      - '100'
+      - '0'
     semicolon:
       launch:
       - /nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl
@@ -572,6 +607,34 @@ keymap:
       - /nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl
       - set
       - 10%
+    shift-h:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - moveactive
+      - '-100'
+      - '0'
+    shift-j:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - moveactive
+      - '0'
+      - '100'
+    shift-k:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - moveactive
+      - '0'
+      - '-100'
+    shift-l:
+      launch:
+      - /nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl
+      - dispatch
+      - moveactive
+      - '100'
+      - '0'
     shift-semicolon:
       launch:
       - /nix/store/w83bwb6v3k50p714wdiplnadr72vp0m5-brightnessctl-0.5.1/bin/brightnessctl
