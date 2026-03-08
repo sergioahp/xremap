@@ -29,6 +29,7 @@ mod event;
 mod event_handler;
 mod pattern;
 mod signal;
+mod socket_worker;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -158,6 +159,7 @@ fn main() -> anyhow::Result<()> {
         signal_dispatcher,
         config.compiled_patterns.clone(),
         config.pattern_start_table.clone(),
+        config.socket_path_runtime.clone(),
     );
     let vendor = u16::from_str_radix(vendor.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x1234);
     let product = u16::from_str_radix(product.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x5678);

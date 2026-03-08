@@ -9,3 +9,4 @@ pub mod action;
 pub mod action_dispatcher;
 pub mod client;
 pub mod event;
+pub mod socket_worker;

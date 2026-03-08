@@ -1,43 +1,76 @@
-# Minimal config exercising the pattern DSL + signal dispatcher
+# Minimal config for socket-driven hyperctl navigation & resize with acceleration curves
+socket_path: /tmp/xremap-nav.sock
+
 signals:
-  nav.left:
+  move.left:
     repeat: true
     interval_ms: 50
     actions:
-      - launch:
-        - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
-        - -c
-        - 'echo nav.left >> /tmp/xremap-nav.log'
-  nav.right:
+      - socket_send: '{"action":"start","id":"move.left","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","movefocus","l"]}'
+  move.left.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"move.left"}'
+  move.right:
     repeat: true
     interval_ms: 50
     actions:
-      - launch:
-        - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
-        - -c
-        - 'echo nav.right >> /tmp/xremap-nav.log'
-  nav.up:
+      - socket_send: '{"action":"start","id":"move.right","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","movefocus","r"]}'
+  move.right.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"move.right"}'
+  move.up:
     repeat: true
     interval_ms: 50
     actions:
-      - launch:
-        - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
-        - -c
-        - 'echo nav.up >> /tmp/xremap-nav.log'
-  nav.down:
+      - socket_send: '{"action":"start","id":"move.up","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","movefocus","u"]}'
+  move.up.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"move.up"}'
+  move.down:
     repeat: true
     interval_ms: 50
     actions:
-      - launch:
-        - /nix/store/x12lw455sq6qy2wcya85d7rb88ybc3df-bash-interactive-5.3p9/bin/sh
-        - -c
-        - 'echo nav.down >> /tmp/xremap-nav.log'
-  nav.stop:
-    actions: []
+      - socket_send: '{"action":"start","id":"move.down","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","movefocus","d"]}'
+  move.down.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"move.down"}'
+
+  resize.left:
+    repeat: true
+    interval_ms: 50
+    actions:
+      - socket_send: '{"action":"start","id":"resize.left","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","-20","0"]}'
+  resize.left.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"resize.left"}'
+  resize.right:
+    repeat: true
+    interval_ms: 50
+    actions:
+      - socket_send: '{"action":"start","id":"resize.right","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","20","0"]}'
+  resize.right.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"resize.right"}'
+  resize.up:
+    repeat: true
+    interval_ms: 50
+    actions:
+      - socket_send: '{"action":"start","id":"resize.up","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","0","-20"]}'
+  resize.up.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"resize.up"}'
+  resize.down:
+    repeat: true
+    interval_ms: 50
+    actions:
+      - socket_send: '{"action":"start","id":"resize.down","command":["/nix/store/i2v76z76zfnd6ydcpp9c0371gkxy442i-hyprland-0.53.3/bin/hyprctl","dispatch","resizeactive","0","20"]}'
+  resize.down.stop:
+    actions:
+      - socket_send: '{"action":"stop","id":"resize.down"}'
 
 patterns:
-  Nav: "Super_L Space (Space!|ε) ( j => emit_start(nav.down) | j! => emit_stop(nav.down) | k => emit_start(nav.up) | k! => emit_stop(nav.up) | h => emit_start(nav.left) | h! => emit_stop(nav.left) | l => emit_start(nav.right) | l! => emit_stop(nav.right) | Space! => noop )* end_on(Super_L!) => emit(nav.stop)"
-  SuperGNav: "Super_L g (g!|ε) ( h => emit_start(nav.left) | h! => emit_stop(nav.left) | j => emit_start(nav.down) | j! => emit_stop(nav.down) | k => emit_start(nav.up) | k! => emit_stop(nav.up) | l => emit_start(nav.right) | l! => emit_stop(nav.right) | g! => noop )* end_on(Super_L!) => emit(nav.stop)"
+  Move: "Super_L d ( d!|ε ) ( h => emit_start(move.left) | h! => emit(move.left.stop) | j => emit_start(move.down) | j! => emit(move.down.stop) | k => emit_start(move.up) | k! => emit(move.up.stop) | l => emit_start(move.right) | l! => emit(move.right.stop) | d! => noop )* end_on(Super_L!) => emit(move.left.stop)"
+  Resize: "Super_L u ( u!|ε ) ( h => emit_start(resize.left) | h! => emit(resize.left.stop) | j => emit_start(resize.down) | j! => emit(resize.down.stop) | k => emit_start(resize.up) | k! => emit(resize.up.stop) | l => emit_start(resize.right) | l! => emit(resize.right.stop) | u! => noop )* end_on(Super_L!) => emit(resize.left.stop)"
 
 keymap: []
 modmap: []

@@ -8,6 +8,7 @@ mod modmap;
 pub mod modmap_action;
 pub mod signal;
 pub use key::{parse_key, DISGUISED_EVENT_OFFSETTER, KEY_MATCH_ANY};
+pub mod socket;
 
 pub mod remap;
 #[cfg(test)]
@@ -43,6 +44,8 @@ pub struct Config {
     pub signals: HashMap<String, signal::SignalBindingConfig>,
     #[serde(default = "HashMap::new")]
     pub patterns: HashMap<String, String>,
+    #[serde(default)]
+    pub socket_path: Option<String>,
     #[serde(default = "default_mode")]
     pub default_mode: String,
     #[serde(deserialize_with = "deserialize_virtual_modifiers", default = "Vec::new")]
@@ -69,6 +72,8 @@ pub struct Config {
     pub compiled_patterns: Vec<CompiledPattern>,
     #[serde(skip)]
     pub pattern_start_table: HashMap<(Key, bool), Vec<usize>>,
+    #[serde(skip)]
+    pub socket_path_runtime: Option<String>,
 }
 
 enum ConfigFiletype {
@@ -109,7 +114,10 @@ pub fn load_configs(filenames: &[PathBuf]) -> Result<Config, Box<dyn error::Erro
         config.keymap.extend(c.keymap);
         config.virtual_modifiers.extend(c.virtual_modifiers);
         config.signals.extend(c.signals);
-        config.patterns.extend(c.patterns);
+    config.patterns.extend(c.patterns);
+    if config.socket_path.is_none() {
+        config.socket_path = c.socket_path;
+    }
     }
 
     // Timestamp for --watch=config
@@ -119,6 +127,7 @@ pub fn load_configs(filenames: &[PathBuf]) -> Result<Config, Box<dyn error::Erro
     config.keymap_table = build_keymap_table(&config.keymap);
     // Prepare signal bindings (runtime form)
     config.signal_bindings = parse_signal_bindings(config.signals.clone());
+    config.socket_path_runtime = config.socket_path.clone();
     // Compile patterns
     let compiled = compile_patterns(&config.patterns)?;
     let mut table: HashMap<(Key, bool), Vec<usize>> = HashMap::new();
