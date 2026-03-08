@@ -95,6 +95,10 @@ impl Builder {
                 }
                 (start, end)
             }
+            NodeKind::Timeout { node, .. } => {
+                // Timeout not enforced yet; compile inner node directly.
+                self.build(node)
+            }
             NodeKind::Repeat { node, kind } => match kind {
                 RepeatKind::ZeroOrMore => {
                     let start = self.add_state();

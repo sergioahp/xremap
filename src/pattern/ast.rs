@@ -30,6 +30,10 @@ pub enum NodeKind {
         node: Box<Node>,
         kind: RepeatKind,
     },
+    Timeout {
+        node: Box<Node>,
+        duration: std::time::Duration,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,4 +50,3 @@ impl Node {
         }
     }
 }
-

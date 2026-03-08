@@ -41,6 +41,30 @@ mod tests {
             _ => panic!("expected seq"),
         }
     }
+
+    #[test]
+    fn parse_end_on() {
+        let ast = parse_pattern("a end_on(b!|c!) => emit(stop)").unwrap();
+        match ast.kind {
+            NodeKind::Seq(seq) => {
+                assert_eq!(seq.len(), 2);
+                match &seq[1].kind {
+                    NodeKind::Alt(alts) => {
+                        assert_eq!(alts.len(), 2);
+                        for alt in alts {
+                            assert!(matches!(alt.actions[0], ActionSpec::End));
+                            match &alt.kind {
+                                NodeKind::Event(Edge::Release(_)) => {}
+                                _ => panic!("expected release event"),
+                            }
+                        }
+                    }
+                    _ => panic!("expected alt"),
+                }
+            }
+            _ => panic!("expected seq"),
+        }
+    }
 }
 
 struct Parser<'a> {
@@ -146,6 +170,9 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self) -> Result<Node, ParseError> {
         self.skip_ws();
+        if self.peek_ident("end_on") {
+            return self.parse_end_on();
+        }
         if self.match_char('(') {
             let expr = self.parse_expr()?;
             self.skip_ws();
@@ -294,5 +321,72 @@ impl<'a> Parser<'a> {
         }
         self.pos = save;
         false
+    }
+
+    fn peek_ident(&self, word: &str) -> bool {
+        self.chars
+            .iter()
+            .skip(self.pos)
+            .take(word.len())
+            .collect::<String>()
+            == word
+    }
+
+    fn parse_end_on(&mut self) -> Result<Node, ParseError> {
+        self.parse_ident()?; // end_on
+        self.skip_ws();
+        if !self.match_char('(') {
+            return Err(ParseError("expected '(' after end_on".into()));
+        }
+        let mut edges = vec![];
+        loop {
+            self.skip_ws();
+            edges.push(self.parse_edge_only()?);
+            self.skip_ws();
+            if self.match_char(')') {
+                break;
+            }
+            if !self.match_char('|') {
+                return Err(ParseError("expected '|' or ')' in end_on".into()));
+            }
+        }
+        self.skip_ws();
+        let mut actions = vec![ActionSpec::End];
+        if self.match_arrow() {
+            let mut extra = self.parse_actions()?;
+            actions.append(&mut extra);
+        }
+        let nodes: Vec<Node> = edges
+            .into_iter()
+            .map(|e| {
+                let mut n = Node::new(NodeKind::Event(e));
+                n.actions = actions.clone();
+                n
+            })
+            .collect();
+        Ok(Node::new(NodeKind::Alt(nodes)))
+    }
+
+    fn parse_edge_only(&mut self) -> Result<Edge, ParseError> {
+        let start = self.pos;
+        while let Some(ch) = self.peek() {
+            if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        if self.pos == start {
+            return Err(ParseError(format!("expected key at position {}", self.pos)));
+        }
+        let raw: String = self.chars[start..self.pos].iter().collect();
+        let is_release = if self.peek() == Some('!') {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        let key = parse_key(&raw).map_err(|e: Box<dyn std::error::Error>| ParseError(e.to_string()))?;
+        Ok(if is_release { Edge::Release(key) } else { Edge::Press(key) })
     }
 }
