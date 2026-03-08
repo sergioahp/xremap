@@ -62,8 +62,8 @@ signals:
       - socket_send: '{"action":"stop","id":"resize.up"}'
       - socket_send: '{"action":"stop","id":"resize.down"}'
 patterns:
-  Move: "Super_L d => emit(float.enable) ( d!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) & emit(move.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) & emit(move.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) & emit(move.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) & emit(move.stop) | d! => noop )* end_on(Super_L!) => emit(move.stop)"
-  Resize: "Super_L u => emit(float.enable) ( u!|ε ) ( h => emit_start(resize.left) | h! => emit_stop(resize.left) & emit(resize.stop) | j => emit_start(resize.down) | j! => emit_stop(resize.down) & emit(resize.stop) | k => emit_start(resize.up) | k! => emit_stop(resize.up) & emit(resize.stop) | l => emit_start(resize.right) | l! => emit_stop(resize.right) & emit(resize.stop) | u! => noop )* end_on(Super_L!) => emit(resize.stop)"
+  Move: "Super_L d => emit(float.enable) ( d!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) ε => emit(move.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) ε => emit(move.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) ε => emit(move.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) ε => emit(move.stop) | d! => noop )* end_on(Super_L!) => emit(move.stop)"
+  Resize: "Super_L u => emit(float.enable) ( u!|ε ) ( h => emit_start(resize.left) | h! => emit_stop(resize.left) ε => emit(resize.stop) | j => emit_start(resize.down) | j! => emit_stop(resize.down) ε => emit(resize.stop) | k => emit_start(resize.up) | k! => emit_stop(resize.up) ε => emit(resize.stop) | l => emit_start(resize.right) | l! => emit_stop(resize.right) ε => emit(resize.stop) | u! => noop )* end_on(Super_L!) => emit(resize.stop)"
 
 keymap: []
 modmap: []

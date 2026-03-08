@@ -865,6 +865,12 @@ fn test_pattern_emit_signal_actions() {
     let _ = fs::remove_file(path);
 }
 
+#[test]
+fn parse_move_pattern_from_config_sample() {
+    let pat = r#"Super_L d => emit(float.enable) ( d!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) ε => emit(move.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) ε => emit(move.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) ε => emit(move.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) ε => emit(move.stop) | d! => noop )* end_on(Super_L!) => emit(move.stop)"#;
+    let _ = crate::pattern::parser::parse_pattern(pat).expect("pattern should parse");
+}
+
 fn write_temp_config(yaml: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
