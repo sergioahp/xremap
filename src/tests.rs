@@ -871,6 +871,74 @@ fn parse_move_pattern_from_config_sample() {
     let _ = crate::pattern::parser::parse_pattern(pat).expect("pattern should parse");
 }
 
+// ── Workspace-toggle pattern tests ──────────────────────────────────────────
+
+const WS_PREV_YAML: &str = indoc! {"
+signals:
+  ws.prev:
+    repeat: false
+    actions:
+      - { press: w }
+patterns:
+  WorkspacePrevHold: \"Super_L leftbrace => emit(ws.prev) ( leftbrace! => emit(ws.prev) leftbrace => emit(ws.prev) )* end_on(Super_L!) => noop\"
+"};
+
+fn make_ws_handler() -> (EventHandler, crate::config::Config) {
+    let path = write_temp_config(WS_PREV_YAML);
+    let config = crate::config::load_configs(&[path]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let handler = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.compiled_patterns.clone(),
+        config.pattern_start_table.clone(),
+        None,
+    );
+    (handler, config)
+}
+
+fn kp(key: Key) -> Event<'static> {
+    Event::KeyEvent(get_input_device_info(), KeyEvent::new(key, KeyValue::Press))
+}
+
+fn kr(key: Key) -> Event<'static> {
+    Event::KeyEvent(get_input_device_info(), KeyEvent::new(key, KeyValue::Release))
+}
+
+fn emits_w(actions: &[Action]) -> bool {
+    actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_W && k.value() == 1))
+}
+
+/// Super+[ emits ws.prev on press.
+#[test]
+fn test_ws_prev_basic() {
+    let (mut h, cfg) = make_ws_handler();
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    let actions = h.on_events(&vec![kp(Key::KEY_LEFTBRACE)], &cfg).unwrap();
+    assert!(emits_w(&actions), "Super+[ should emit ws.prev");
+}
+
+/// Super+J (unrelated key) kills the pattern; Super+[ while still holding Super
+/// should still emit ws.prev via sticky restart.
+#[test]
+fn test_ws_prev_after_other_super_chord() {
+    let (mut h, cfg) = make_ws_handler();
+    // Press Super — pattern arms
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    // Press+release J — kills WorkspacePrevHold, but Super still held
+    h.on_events(&vec![kp(Key::KEY_J)], &cfg).unwrap();
+    h.on_events(&vec![kr(Key::KEY_J)], &cfg).unwrap();
+    // Press [ — sticky restart should have re-armed; expect ws.prev
+    let actions = h.on_events(&vec![kp(Key::KEY_LEFTBRACE)], &cfg).unwrap();
+    assert!(emits_w(&actions), "Super+[ after Super+J should emit ws.prev via sticky restart");
+}
+
 fn write_temp_config(yaml: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
