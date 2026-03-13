@@ -71,6 +71,8 @@ signals:
 # Float manually first with Super+D, Super+U if needed.
 patterns:
   WindowNav: "Super_L space => noop ( space!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) ε => emit_stop(resize.left) ε => emit(nav.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) ε => emit_stop(resize.down) ε => emit(nav.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) ε => emit_stop(resize.up) ε => emit(nav.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) ε => emit_stop(resize.right) ε => emit(nav.stop) | shift_l h => emit_start(resize.left) | shift_l j => emit_start(resize.down) | shift_l k => emit_start(resize.up) | shift_l l => emit_start(resize.right) | shift_l! => noop | space! => noop )* end_on(Super_L!) => emit(nav.stop)"
+  # Hold Super+G, then hjkl to resize. Release G or Super to stop.
+  Resize: "Super_L g => noop ( h => emit_start(resize.left) | h! => emit_stop(resize.left) ε => emit(resize.stop) | j => emit_start(resize.down) | j! => emit_stop(resize.down) ε => emit(resize.stop) | k => emit_start(resize.up) | k! => emit_stop(resize.up) ε => emit(resize.stop) | l => emit_start(resize.right) | l! => emit_stop(resize.right) ε => emit(resize.stop) | g! => emit_stop(resize.left) ε => emit_stop(resize.right) ε => emit_stop(resize.up) ε => emit_stop(resize.down) ε => emit(resize.stop) )* end_on(Super_L!) => emit(resize.stop)"
 
 keymap:
 - name: main remaps
