@@ -4,6 +4,9 @@ use evdev::KeyCode as Key;
 pub enum Edge {
     Press(Key),
     Release(Key),
+    /// Matches any key press or release. Used as a catch-all in loops to
+    /// consume unrecognised keys without letting them fall through.
+    Any,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -133,7 +133,9 @@ pub fn load_configs(filenames: &[PathBuf]) -> Result<Config, Box<dyn error::Erro
     let mut table: HashMap<(Key, bool), Vec<usize>> = HashMap::new();
     for (idx, pat) in compiled.iter().enumerate() {
         for edge in &pat.start_edges {
-            table.entry(edge_key(edge)).or_default().push(idx);
+            if let Some(k) = edge_key(edge) {
+                table.entry(k).or_default().push(idx);
+            }
         }
     }
     config.pattern_start_table = table;

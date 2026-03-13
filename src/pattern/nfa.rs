@@ -178,7 +178,7 @@ impl Machine {
         for s in self.current.iter() {
             for t in &self.nfa.states[*s].transitions {
                 if let Some(e) = &t.edge {
-                    if e == edge {
+                    if e == edge || *e == Edge::Any {
                         actions.extend(t.actions.clone());
                         collect_epsilons(&self.nfa, t.target, &mut next_states, &mut actions);
                     }

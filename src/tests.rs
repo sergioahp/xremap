@@ -939,6 +939,76 @@ fn test_ws_prev_after_other_super_chord() {
     assert!(emits_w(&actions), "Super+[ after Super+J should emit ws.prev via sticky restart");
 }
 
+// ── any-wildcard / modifier-mode tests ──────────────────────────────────────
+
+const GUI_HOLD_YAML: &str = indoc! {"
+signals:
+  gui.open:
+    repeat: false
+    actions:
+      - { press: o }
+  gui.close:
+    repeat: false
+    actions:
+      - { press: c }
+patterns:
+  GuiHold: \"Super_L s => noop ( o => emit(gui.open) | o! => emit(gui.close) | any => noop )* end_on(Super_L! | s!) => noop\"
+"};
+
+fn make_gui_handler() -> (EventHandler, crate::config::Config) {
+    let path = write_temp_config(GUI_HOLD_YAML);
+    let config = crate::config::load_configs(&[path]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let handler = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.compiled_patterns.clone(),
+        config.pattern_start_table.clone(),
+        None,
+    );
+    (handler, config)
+}
+
+fn emits_key(actions: &[Action], key: Key) -> bool {
+    actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == key && k.value() == 1))
+}
+
+/// Super+S+O opens the GUI; releasing O closes it; pressing O again reopens.
+#[test]
+fn test_gui_hold_open_close_repeat() {
+    let (mut h, cfg) = make_gui_handler();
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+
+    let open = h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
+    assert!(emits_key(&open, Key::KEY_O), "first O press should open GUI");
+
+    let close = h.on_events(&vec![kr(Key::KEY_O)], &cfg).unwrap();
+    assert!(emits_key(&close, Key::KEY_C), "O release should close GUI");
+
+    let reopen = h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
+    assert!(emits_key(&reopen, Key::KEY_O), "second O press should reopen GUI");
+}
+
+/// While Super+S held (no O), pressing J should NOT fall through to keymap.
+#[test]
+fn test_gui_hold_blocks_other_keys() {
+    let (mut h, cfg) = make_gui_handler();
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+
+    // J press while in modifier mode — should be consumed, not forwarded
+    let actions = h.on_events(&vec![kp(Key::KEY_J)], &cfg).unwrap();
+    let j_forwarded = actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_J));
+    assert!(!j_forwarded, "J should be blocked while Super+S modifier mode is active");
+}
+
 fn write_temp_config(yaml: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(

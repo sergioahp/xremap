@@ -880,6 +880,7 @@ impl EventHandler {
 
         let key = match edge {
             Edge::Press(k) | Edge::Release(k) => *k,
+            Edge::Any => unreachable!("Edge::Any is only valid in NFA transitions"),
         };
         let is_release = matches!(edge, Edge::Release(_));
         if let Some(ids) = self.pattern_start_table.get(&(key, is_release)) {

@@ -47,10 +47,11 @@ fn first_edges(nfa: &Nfa) -> Vec<Edge> {
     edges
 }
 
-pub fn edge_key(edge: &Edge) -> (Key, bool) {
+pub fn edge_key(edge: &Edge) -> Option<(Key, bool)> {
     match edge {
-        Edge::Press(k) => (*k, false),
-        Edge::Release(k) => (*k, true),
+        Edge::Press(k) => Some((*k, false)),
+        Edge::Release(k) => Some((*k, true)),
+        Edge::Any => None, // wildcard: not a start edge
     }
 }
 

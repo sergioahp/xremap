@@ -192,6 +192,10 @@ impl<'a> Parser<'a> {
         if self.match_epsilon() {
             return Ok(Node::new(NodeKind::Epsilon));
         }
+        if self.peek_ident("any") {
+            self.pos += 3;
+            return Ok(Node::new(NodeKind::Event(Edge::Any)));
+        }
         self.parse_key_token()
     }
 
