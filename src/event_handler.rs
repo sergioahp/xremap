@@ -184,15 +184,16 @@ impl EventHandler {
                     Edge::Press(key)
                 };
                 if self.process_patterns(&edge)? {
-                    // Modifier keys must still update state (and be forwarded to the virtual
-                    // device) even when a pattern consumes them.  Without this, if the pattern
-                    // later fails to match, `self.modifiers` won't contain the held modifier and
-                    // subsequent keymap lookups (e.g. super-comma) will silently miss.
-                    if config.virtual_modifiers.contains(&key) {
+                    // Modifier keys must still update internal state even when a pattern consumes
+                    // them.  Without this, if the pattern later fails to match, `self.modifiers`
+                    // won't contain the held modifier and subsequent keymap lookups (e.g.
+                    // super-comma) will silently miss.
+                    // We do NOT forward the key to the virtual device here: sending Super to the
+                    // virtual device while a smooth-motion pattern is active causes the compositor
+                    // (Hyprland) to see Super held for the full duration, which interferes with
+                    // IPC-driven resize/move commands and produces jitter.
+                    if config.virtual_modifiers.contains(&key) || MODIFIER_KEYS.contains(&key) {
                         self.update_modifier(key, value);
-                    } else if MODIFIER_KEYS.contains(&key) {
-                        self.update_modifier(key, value);
-                        self.send_key(&key, value);
                     }
                     continue;
                 }
