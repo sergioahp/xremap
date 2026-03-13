@@ -854,6 +854,27 @@ impl EventHandler {
                 next_active.push(pat);
             } else {
                 self.signal_dispatcher.stop_all();
+                // Sticky restart: if the pattern died unexpectedly (not via end_on) and
+                // its modifier start key is still held, re-arm it from the post-modifier
+                // state.  This allows e.g. Super+J followed by Super+[ without releasing
+                // Super: when Super+J kills the workspace pattern, it is immediately
+                // re-armed because Super is still held.
+                if !ended {
+                    if let Some(cp) = self.compiled_patterns.get(pat.id) {
+                        for start_edge in &cp.start_edges.clone() {
+                            if let Edge::Press(k) = start_edge {
+                                if self.modifiers.contains(k) {
+                                    let mut new_machine = cp.machine();
+                                    let r = new_machine.step(start_edge);
+                                    if r.alive && !r.ended {
+                                        next_active.push(ActivePattern { id: pat.id, machine: new_machine });
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
