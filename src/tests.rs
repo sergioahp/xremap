@@ -975,6 +975,25 @@ fn emits_key(actions: &[Action], key: Key) -> bool {
     actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == key && k.value() == 1))
 }
 
+/// After a GuiHold session ends, a fresh Super+S+O must still work.
+/// Regression: machine left in stale post-Super state caused S press to miss the
+/// pattern and fall through to keymap; O then fired the wrong action (volume up).
+#[test]
+fn test_gui_hold_second_session() {
+    let (mut h, cfg) = make_gui_handler();
+    // First session: enter and exit GuiHold
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+    h.on_events(&vec![kr(Key::KEY_S)], &cfg).unwrap(); // exit via s!
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &cfg).unwrap();
+
+    // Second session: fresh Super+S+O — O must open GUI, not fire keymap
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+    let open = h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
+    assert!(emits_key(&open, Key::KEY_O), "second session O press must open GUI, not fire keymap");
+}
+
 /// Super+S+O opens the GUI; releasing O closes it; pressing O again reopens.
 #[test]
 fn test_gui_hold_open_close_repeat() {

@@ -831,8 +831,8 @@ impl EventHandler {
         }
 
         let res = self.pattern_machine.as_mut().unwrap().step(edge);
-        let consumed = res.consumed;
-        let (signals, ended) = signals_from_actions(res.actions);
+        let mut consumed = res.consumed;
+        let (mut signals, ended) = signals_from_actions(res.actions);
         let needs_reset = !res.alive || ended;
 
         if needs_reset {
@@ -849,6 +849,22 @@ impl EventHandler {
                 let saved = m.current.clone();
                 let r = m.step(&Edge::Press(key));
                 if !r.alive {
+                    m.current = saved;
+                }
+            }
+            // If the machine died without an explicit end_on (i.e. the key was simply
+            // unrecognized), try the triggering edge again on the freshly re-armed machine.
+            // This handles the case where the machine was in a stale post-modifier state
+            // and the current key (e.g. Super or S) should now start/advance a pattern.
+            if !ended {
+                let m = self.pattern_machine.as_mut().unwrap();
+                let saved = m.current.clone();
+                let retry = m.step(edge);
+                if retry.alive {
+                    let (retry_signals, _) = signals_from_actions(retry.actions);
+                    signals.extend(retry_signals);
+                    consumed = true;
+                } else {
                     m.current = saved;
                 }
             }
