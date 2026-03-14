@@ -992,6 +992,24 @@ fn test_gui_hold_open_close_repeat() {
     assert!(emits_key(&reopen, Key::KEY_O), "second O press should reopen GUI");
 }
 
+/// After releasing S (or Super) from GuiHold, normal keys must not be swallowed.
+#[test]
+fn test_gui_hold_keys_forwarded_after_exit() {
+    let (mut h, cfg) = make_gui_handler();
+    // Enter GuiHold: Super+S+O (open), then release S to exit the mode
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
+    h.on_events(&vec![kr(Key::KEY_S)], &cfg).unwrap(); // exit via s!
+    h.on_events(&vec![kr(Key::KEY_O)], &cfg).unwrap();
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &cfg).unwrap();
+
+    // Now `a` must be forwarded — machine must not still be in the swallowing loop
+    let actions = h.on_events(&vec![kp(Key::KEY_A)], &cfg).unwrap();
+    let a_forwarded = actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_A));
+    assert!(a_forwarded, "KEY_A must be forwarded after GuiHold exits via s!");
+}
+
 /// While Super+S held (no O), pressing J should NOT fall through to keymap.
 #[test]
 fn test_gui_hold_blocks_other_keys() {

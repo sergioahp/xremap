@@ -832,8 +832,8 @@ impl EventHandler {
 
         let res = self.pattern_machine.as_mut().unwrap().step(edge);
         let consumed = res.consumed;
-        let needs_reset = !res.alive;
-        let (signals, _) = signals_from_actions(res.actions);
+        let (signals, ended) = signals_from_actions(res.actions);
+        let needs_reset = !res.alive || ended;
 
         if needs_reset {
             self.pattern_machine.as_mut().unwrap().reset();
