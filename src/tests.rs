@@ -949,7 +949,7 @@ signals:
     actions:
       - { press: c }
 patterns:
-  GuiHold: \"Super_L s => noop ( o => emit(gui.open) | o! => emit(gui.close) | any => noop )* end_on(Super_L! | s!) => noop\"
+  GuiHold: \"Super_L s => noop ( o => emit(gui.open) | o! => emit(gui.close) | any => noop )* end_on(Super_L! | s!) => emit(gui.close)\"
 "};
 
 fn make_gui_handler() -> (EventHandler, crate::config::Config) {
@@ -992,6 +992,19 @@ fn test_gui_hold_second_session() {
     h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
     let open = h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
     assert!(emits_key(&open, Key::KEY_O), "second session O press must open GUI, not fire keymap");
+}
+
+/// Releasing S while GUI is open (O held) must emit gui.close via end_on action.
+#[test]
+fn test_gui_hold_close_on_s_release() {
+    let (mut h, cfg) = make_gui_handler();
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap(); // open
+
+    // Release S while Super+O still held — end_on(s!) must close the GUI
+    let close = h.on_events(&vec![kr(Key::KEY_S)], &cfg).unwrap();
+    assert!(emits_key(&close, Key::KEY_C), "releasing S must close GUI via end_on emit(gui.close)");
 }
 
 /// Super+S+O opens the GUI; releasing O closes it; pressing O again reopens.
