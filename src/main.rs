@@ -163,8 +163,7 @@ fn main() -> anyhow::Result<()> {
         delay,
         build_client(),
         signal_dispatcher,
-        config.compiled_patterns.clone(),
-        config.pattern_start_table.clone(),
+        config.fused_nfa.clone(),
         worker_handle,
     );
     let vendor = u16::from_str_radix(vendor.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x1234);

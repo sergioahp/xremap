@@ -145,6 +145,7 @@ pub struct StepResult {
     pub actions: Vec<ActionSpec>,
     pub alive: bool,
     pub ended: bool,
+    pub consumed: bool,
 }
 
 impl Machine {
@@ -175,10 +176,12 @@ impl Machine {
     pub fn step(&mut self, edge: &Edge) -> StepResult {
         let mut next_states: HashSet<usize> = HashSet::new();
         let mut actions = vec![];
+        let mut consumed = false;
         for s in self.current.iter() {
             for t in &self.nfa.states[*s].transitions {
                 if let Some(e) = &t.edge {
                     if e == edge || *e == Edge::Any {
+                        consumed = true;
                         actions.extend(t.actions.clone());
                         collect_epsilons(&self.nfa, t.target, &mut next_states, &mut actions);
                     }
@@ -188,7 +191,7 @@ impl Machine {
         let alive = !next_states.is_empty();
         let ended = actions.iter().any(|a| matches!(a, ActionSpec::End));
         self.current = next_states;
-        StepResult { actions, alive, ended }
+        StepResult { actions, alive, ended, consumed }
     }
 }
 

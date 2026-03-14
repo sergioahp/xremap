@@ -799,8 +799,7 @@ pub fn assert_actions_with_current_application(
         Duration::from_micros(0),
         WMClient::new("static", Box::new(StaticClient { current_application })),
         dispatcher,
-        vec![],
-        std::collections::HashMap::new(),
+        None,
         None,
     );
     let mut actual: Vec<Action> = vec![];
@@ -833,8 +832,7 @@ fn test_pattern_emit_signal_actions() {
         Duration::from_micros(0),
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
-        config.compiled_patterns.clone(),
-        config.pattern_start_table.clone(),
+        config.fused_nfa.clone(),
         None,
     );
 
@@ -896,8 +894,7 @@ fn make_ws_handler() -> (EventHandler, crate::config::Config) {
         Duration::from_micros(0),
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
-        config.compiled_patterns.clone(),
-        config.pattern_start_table.clone(),
+        config.fused_nfa.clone(),
         None,
     );
     (handler, config)
@@ -968,8 +965,7 @@ fn make_gui_handler() -> (EventHandler, crate::config::Config) {
         Duration::from_micros(0),
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
-        config.compiled_patterns.clone(),
-        config.pattern_start_table.clone(),
+        config.fused_nfa.clone(),
         None,
     );
     (handler, config)

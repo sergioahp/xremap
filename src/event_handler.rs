@@ -56,9 +56,7 @@ pub struct EventHandler {
     actions: Vec<Action>,
     // State machine patterns
     signal_dispatcher: crate::signal::SignalDispatcher,
-    active_patterns: Vec<ActivePattern>,
-    pattern_start_table: std::collections::HashMap<(Key, bool), Vec<usize>>,
-    compiled_patterns: Vec<crate::pattern::CompiledPattern>,
+    pattern_machine: Option<crate::pattern::Machine>,
     next_signal_due: Option<Instant>,
     worker_handle: Option<WorkerHandle>,
 }
@@ -66,12 +64,6 @@ pub struct EventHandler {
 struct TaggedAction {
     action: KeymapAction,
     exact_match: bool,
-}
-
-#[derive(Debug)]
-struct ActivePattern {
-    id: usize,
-    machine: crate::pattern::nfa::Machine,
 }
 
 impl EventHandler {
@@ -82,8 +74,7 @@ impl EventHandler {
         keypress_delay: Duration,
         application_client: WMClient,
         signal_dispatcher: SignalDispatcher,
-        compiled_patterns: Vec<crate::pattern::CompiledPattern>,
-        pattern_start_table: std::collections::HashMap<(Key, bool), Vec<usize>>,
+        fused_nfa: Option<crate::pattern::nfa::Nfa>,
         worker_handle: Option<WorkerHandle>,
     ) -> EventHandler {
         EventHandler {
@@ -104,9 +95,7 @@ impl EventHandler {
             keypress_delay,
             actions: vec![],
             signal_dispatcher,
-            active_patterns: vec![],
-            pattern_start_table,
-            compiled_patterns,
+            pattern_machine: fused_nfa.map(crate::pattern::Machine::new),
             next_signal_due: None,
             worker_handle,
         }
@@ -114,9 +103,7 @@ impl EventHandler {
 
     pub fn reload_from_config(&mut self, config: &Config) -> Result<(), Box<dyn Error>> {
         self.signal_dispatcher = make_signal_dispatcher(config);
-        self.compiled_patterns = config.compiled_patterns.clone();
-        self.pattern_start_table = config.pattern_start_table.clone();
-        self.active_patterns.clear();
+        self.pattern_machine = config.fused_nfa.as_ref().map(|nfa| crate::pattern::Machine::new(nfa.clone()));
         self.signal_dispatcher.stop_all();
         self.schedule_signal_timer(None, Instant::now())?;
         // worker_handle is process-lifetime; not reloaded on config change.
@@ -839,71 +826,33 @@ impl EventHandler {
     }
 
     fn process_patterns(&mut self, edge: &Edge) -> Result<bool, Box<dyn Error>> {
-        let mut consumed = false;
-        let mut signals: Vec<Signal> = vec![];
-        let mut next_active: Vec<ActivePattern> = vec![];
+        if self.pattern_machine.is_none() {
+            return Ok(false);
+        }
 
-        for mut pat in self.active_patterns.drain(..) {
-            let res = pat.machine.step(edge);
-            if res.alive || !res.actions.is_empty() {
-                consumed = true;
-            }
-            let (sig, ended) = signals_from_actions(res.actions);
-            signals.extend(sig);
-            if res.alive && !ended {
-                next_active.push(pat);
-            } else {
-                self.signal_dispatcher.stop_all();
-                // Sticky restart: if the pattern died unexpectedly (not via end_on) and
-                // its modifier start key is still held, re-arm it from the post-modifier
-                // state.  This allows e.g. Super+J followed by Super+[ without releasing
-                // Super: when Super+J kills the workspace pattern, it is immediately
-                // re-armed because Super is still held.
-                if !ended {
-                    if let Some(cp) = self.compiled_patterns.get(pat.id) {
-                        for start_edge in &cp.start_edges.clone() {
-                            if let Edge::Press(k) = start_edge {
-                                if self.modifiers.contains(k) {
-                                    let mut new_machine = cp.machine();
-                                    let r = new_machine.step(start_edge);
-                                    if r.alive && !r.ended {
-                                        next_active.push(ActivePattern { id: pat.id, machine: new_machine });
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
+        let res = self.pattern_machine.as_mut().unwrap().step(edge);
+        let consumed = res.consumed;
+        let needs_reset = !res.alive;
+        let (signals, _) = signals_from_actions(res.actions);
+
+        if needs_reset {
+            self.pattern_machine.as_mut().unwrap().reset();
+            // Re-arm: replay held modifier presses so patterns that start with
+            // a modifier (e.g. Super_L leftbrace) are restored to their
+            // post-modifier state without waiting for the key to be re-pressed.
+            let held: Vec<Key> = MODIFIER_KEYS.iter()
+                .filter(|k| self.modifiers.contains(k))
+                .copied()
+                .collect();
+            for key in held {
+                let m = self.pattern_machine.as_mut().unwrap();
+                let saved = m.current.clone();
+                let r = m.step(&Edge::Press(key));
+                if !r.alive {
+                    m.current = saved;
                 }
             }
         }
-
-        let key = match edge {
-            Edge::Press(k) | Edge::Release(k) => *k,
-            Edge::Any => unreachable!("Edge::Any is only valid in NFA transitions"),
-        };
-        let is_release = matches!(edge, Edge::Release(_));
-        if let Some(ids) = self.pattern_start_table.get(&(key, is_release)) {
-            let start_ids = ids.clone();
-            for id in start_ids {
-                if let Some(pat) = self.compiled_patterns.get(id) {
-                    let mut machine = pat.machine();
-                    let res = machine.step(edge);
-                    if res.alive || !res.actions.is_empty() {
-                        consumed = true;
-                    }
-                    let (sig, ended) = signals_from_actions(res.actions);
-                    signals.extend(sig);
-                    if res.alive && !ended {
-                        next_active.push(ActivePattern { id, machine });
-                    } else {
-                        self.signal_dispatcher.stop_all();
-                    }
-                }
-            }
-        }
-
-        self.active_patterns = next_active;
 
         if !signals.is_empty() || self.signal_dispatcher.has_repeats() {
             let now = Instant::now();

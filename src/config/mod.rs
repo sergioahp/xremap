@@ -17,7 +17,8 @@ mod tests;
 extern crate serde_yaml;
 extern crate toml;
 
-use crate::pattern::{compile_patterns, edge_key, CompiledPattern};
+use crate::pattern::build_fused_nfa;
+use crate::pattern::nfa::Nfa;
 use evdev::KeyCode as Key;
 use keymap::Keymap;
 use modmap::Modmap;
@@ -69,9 +70,7 @@ pub struct Config {
     #[serde(skip)]
     pub signal_bindings: HashMap<String, (Vec<KeymapAction>, Option<std::time::Duration>)>,
     #[serde(skip)]
-    pub compiled_patterns: Vec<CompiledPattern>,
-    #[serde(skip)]
-    pub pattern_start_table: HashMap<(Key, bool), Vec<usize>>,
+    pub fused_nfa: Option<Nfa>,
     #[serde(skip)]
     pub socket_path_runtime: Option<String>,
 }
@@ -128,18 +127,10 @@ pub fn load_configs(filenames: &[PathBuf]) -> Result<Config, Box<dyn error::Erro
     // Prepare signal bindings (runtime form)
     config.signal_bindings = parse_signal_bindings(config.signals.clone());
     config.socket_path_runtime = config.socket_path.clone();
-    // Compile patterns
-    let compiled = compile_patterns(&config.patterns)?;
-    let mut table: HashMap<(Key, bool), Vec<usize>> = HashMap::new();
-    for (idx, pat) in compiled.iter().enumerate() {
-        for edge in &pat.start_edges {
-            if let Some(k) = edge_key(edge) {
-                table.entry(k).or_default().push(idx);
-            }
-        }
+    // Compile all patterns into a single fused NFA.
+    if !config.patterns.is_empty() {
+        config.fused_nfa = Some(build_fused_nfa(&config.patterns)?);
     }
-    config.pattern_start_table = table;
-    config.compiled_patterns = compiled;
 
     Ok(config)
 }
