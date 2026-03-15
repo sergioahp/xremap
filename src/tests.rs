@@ -1189,6 +1189,65 @@ fn test_full_reset_when_anchor_released() {
     let _ = fs::remove_file(path);
 }
 
+/// Verifies that push_frame extends the active frame after the d! anchor key is released.
+/// While D is held, j fires swap_next. D release fires push_frame (new frame, anchor={Super}).
+/// After D is released, c fires wm.kill (frame 2 still active). Super release ends everything.
+#[test]
+fn test_push_frame_extends_frame_after_anchor_release() {
+    let yaml = indoc! {"
+    patterns:
+      WinMgmt: \"Super_L d => noop ( j => emit(test.j) | c => emit(test.c) | d! => push_frame | any => noop )* end_on(Super_L!) => noop\"
+    signals:
+      test.j:
+        actions: []
+      test.c:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+    );
+
+    // Super_L press: enters recognition phase (modifier, consumed)
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    // D press: commit fires (noop action), frame pushed with anchor={Super, D}
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+
+    // J press while D held: test.j signal should fire, J not forwarded
+    let j_actions = h.on_events(&vec![kp(Key::KEY_J)], &config).unwrap();
+    let j_forwarded = j_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_J && k.value() == 1));
+    assert!(!j_forwarded, "J must be consumed by the loop while D is held; actions={j_actions:?}");
+
+    // D release: push_frame fires — new frame pushed with anchor={Super_L} only
+    h.on_events(&vec![kr(Key::KEY_D)], &config).unwrap();
+
+    // C press: test.c signal should fire, C not forwarded (frame 2 still active, Super still held)
+    let c_actions = h.on_events(&vec![kp(Key::KEY_C)], &config).unwrap();
+    let c_forwarded = c_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_C && k.value() == 1));
+    assert!(!c_forwarded, "C must be consumed by the loop after D release (push_frame frame active); actions={c_actions:?}");
+
+    // Super release: end_on fires, full reset
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &config).unwrap();
+
+    // After full reset, a new key should fall through
+    let x_actions = h.on_events(&vec![kp(Key::KEY_X)], &config).unwrap();
+    let x_forwarded = x_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_X && k.value() == 1));
+    assert!(x_forwarded, "X must fall through after full reset; actions={x_actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
 fn write_temp_config(yaml: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(

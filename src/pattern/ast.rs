@@ -21,6 +21,7 @@ pub enum ActionSpec {
     Emit(String, crate::signal::SignalKind),
     Noop,
     End,
+    PushFrame,  // push current NFA states + held keys as a new frame on the stack
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

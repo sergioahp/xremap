@@ -259,6 +259,9 @@ impl<'a> Parser<'a> {
         if ident == "end" {
             return Ok(ActionSpec::End);
         }
+        if ident == "push_frame" {
+            return Ok(ActionSpec::PushFrame);
+        }
         if !self.match_char('(') {
             return Err(ParseError("expected '(' after action".into()));
         }

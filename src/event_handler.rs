@@ -63,10 +63,11 @@ pub struct EventHandler {
     pattern_held_keys: HashSet<Key>,
     // Non-modifier events consumed during recognition phase, pending replay on failure
     pattern_speculative_buffer: Vec<(Key, i32)>,
-    // Whether pattern machine has committed (fired its first action)
-    pattern_committed: bool,
-    // Checkpoint at commit: (NFA state set, anchor keys held at that time)
-    pattern_checkpoint: Option<(HashSet<usize>, HashSet<Key>)>,
+    // Frame stack: each entry is (nfa_states_at_push, anchor_keys_at_push).
+    // Non-empty means committed. Pushed at commit point and on explicit PushFrame actions.
+    // On failure, walk from top and restore nearest valid frame (anchor ⊆ held_keys).
+    // Cleared entirely on ended=true (end_on / explicit exit).
+    pattern_frame_stack: Vec<(HashSet<usize>, HashSet<Key>)>,
 }
 
 struct TaggedAction {
@@ -108,16 +109,14 @@ impl EventHandler {
             worker_handle,
             pattern_held_keys: HashSet::new(),
             pattern_speculative_buffer: vec![],
-            pattern_committed: false,
-            pattern_checkpoint: None,
+            pattern_frame_stack: vec![],
         }
     }
 
     pub fn reload_from_config(&mut self, config: &Config) -> Result<(), Box<dyn Error>> {
         self.signal_dispatcher = make_signal_dispatcher(config);
         self.pattern_machine = config.fused_nfa.as_ref().map(|nfa| crate::pattern::Machine::new(nfa.clone()));
-        self.pattern_committed = false;
-        self.pattern_checkpoint = None;
+        self.pattern_frame_stack.clear();
         self.pattern_speculative_buffer.clear();
         self.signal_dispatcher.stop_all();
         self.schedule_signal_timer(None, Instant::now())?;
@@ -850,21 +849,23 @@ impl EventHandler {
 
         let res = self.pattern_machine.as_mut().unwrap().step(edge);
         let mut consumed = res.consumed;
+        let committed = !self.pattern_frame_stack.is_empty();
+        let push_frame = res.actions.iter().any(|a| matches!(a, ActionSpec::PushFrame));
         let (mut signals, ended) = signals_from_actions(res.actions.clone());
-        let has_actions = !res.actions.is_empty();
+        let has_actions = res.actions.iter().any(|a| !matches!(a, ActionSpec::PushFrame));
         let needs_reset = !res.alive || ended;
 
-        // Commit point: first time actions fire while still in recognition phase
-        if consumed && has_actions && !self.pattern_committed {
-            self.pattern_committed = true;
-            self.pattern_speculative_buffer.clear(); // consumed by pattern, not replayed
-            // Save checkpoint if machine stays alive (has an active loop to return to)
+        // Commit point: first actions fire in recognition phase → push initial frame
+        if consumed && has_actions && !committed {
+            self.pattern_speculative_buffer.clear();
             if res.alive && !ended {
-                let states = self.pattern_machine.as_ref().unwrap().current.clone();
-                self.pattern_checkpoint = Some((states, self.pattern_held_keys.clone()));
+                self.pattern_frame_stack.push((
+                    self.pattern_machine.as_ref().unwrap().current.clone(),
+                    self.pattern_held_keys.clone(),
+                ));
             }
-        } else if consumed && !self.pattern_committed {
-            // Still in recognition phase: buffer non-modifier consumed events
+        } else if consumed && !committed {
+            // Recognition phase: buffer non-modifier events for potential replay on failure
             let is_modifier = match edge {
                 Edge::Press(k) | Edge::Release(k) => MODIFIER_KEYS.contains(k),
                 Edge::Any => false,
@@ -877,31 +878,46 @@ impl EventHandler {
             }
         }
 
+        // Explicit push_frame action in active phase
+        if committed && push_frame && res.alive && !ended {
+            self.pattern_frame_stack.push((
+                self.pattern_machine.as_ref().unwrap().current.clone(),
+                self.pattern_held_keys.clone(),
+            ));
+        }
+
         if needs_reset {
-            // Active phase failure with valid checkpoint → partial reset
-            if !ended && self.pattern_committed {
-                if let Some((checkpoint_states, anchor_keys)) = &self.pattern_checkpoint {
-                    if anchor_keys.iter().all(|k| self.pattern_held_keys.contains(k)) {
-                        self.pattern_machine.as_mut().unwrap().current = checkpoint_states.clone();
-                        return self.dispatch_pattern_signals_and_return(signals, consumed);
+            if !ended {
+                // Walk stack from top: find nearest valid frame (all anchor keys still held)
+                loop {
+                    match self.pattern_frame_stack.last() {
+                        Some((frame_states, anchor_keys))
+                            if anchor_keys.iter().all(|k| self.pattern_held_keys.contains(k)) =>
+                        {
+                            let states = frame_states.clone();
+                            self.pattern_machine.as_mut().unwrap().current = states;
+                            return self.dispatch_pattern_signals_and_return(signals, consumed);
+                        }
+                        Some(_) => {
+                            self.pattern_frame_stack.pop();
+                        }
+                        None => break,
                     }
                 }
             }
 
-            // Full reset path
-            if !self.pattern_committed {
-                // Replay speculative buffer — these were consumed but pattern ultimately failed
+            // Full reset: no valid frame found (or ended=true)
+            if self.pattern_frame_stack.is_empty() {
+                // Was in recognition phase: replay buffered events
                 let buffer = std::mem::take(&mut self.pattern_speculative_buffer);
                 for (key, value) in buffer {
                     self.send_key(&key, value);
                 }
             }
-
-            self.pattern_committed = false;
-            self.pattern_checkpoint = None;
+            self.pattern_frame_stack.clear();
             self.pattern_speculative_buffer.clear();
 
-            // Reset + re-arm with currently held modifier keys
+            // Reset + re-arm with held modifiers
             let m = self.pattern_machine.as_mut().unwrap();
             m.reset();
             let held_mods: Vec<Key> = MODIFIER_KEYS.iter()
@@ -916,26 +932,30 @@ impl EventHandler {
                 }
             }
 
-            // Retry: if not ended, try the triggering edge on the re-armed machine.
-            // Handles second-session patterns and cases where the reset key starts a new pattern.
+            // Retry the triggering edge on the re-armed machine (handles second-session patterns)
             if !ended {
                 let m = self.pattern_machine.as_mut().unwrap();
                 let saved = m.current.clone();
                 let retry = m.step(edge);
                 if retry.alive {
-                    let retry_has_actions = !retry.actions.is_empty();
+                    let retry_has_actions = retry.actions.iter().any(|a| !matches!(a, ActionSpec::PushFrame));
+                    let retry_push = retry.actions.iter().any(|a| matches!(a, ActionSpec::PushFrame));
                     let (retry_signals, _) = signals_from_actions(retry.actions);
                     signals.extend(retry_signals);
                     consumed = true;
                     if retry_has_actions {
-                        self.pattern_committed = true;
-                        self.pattern_speculative_buffer.clear();
-                        if retry.alive {
-                            let states = self.pattern_machine.as_ref().unwrap().current.clone();
-                            self.pattern_checkpoint = Some((states, self.pattern_held_keys.clone()));
+                        self.pattern_frame_stack.push((
+                            self.pattern_machine.as_ref().unwrap().current.clone(),
+                            self.pattern_held_keys.clone(),
+                        ));
+                        if retry_push {
+                            self.pattern_frame_stack.push((
+                                self.pattern_machine.as_ref().unwrap().current.clone(),
+                                self.pattern_held_keys.clone(),
+                            ));
                         }
                     } else {
-                        // Retry consumed but no action yet — buffer it (recognition phase)
+                        // Retry consumed in recognition phase — buffer it
                         let is_modifier = match edge {
                             Edge::Press(k) | Edge::Release(k) => MODIFIER_KEYS.contains(k),
                             Edge::Any => false,
@@ -994,10 +1014,8 @@ fn signals_from_actions(specs: Vec<ActionSpec>) -> (Vec<Signal>, bool) {
     for spec in specs {
         match spec {
             ActionSpec::Emit(name, kind) => signals.push(Signal { name, kind }),
-            ActionSpec::Noop => {}
-            ActionSpec::End => {
-                ended = true;
-            }
+            ActionSpec::Noop | ActionSpec::PushFrame => {}
+            ActionSpec::End => { ended = true; }
         }
     }
     (signals, ended)
