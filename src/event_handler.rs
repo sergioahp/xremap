@@ -12,7 +12,9 @@ use crate::device::InputDeviceInfo;
 use crate::event::{Event, KeyEvent, RelativeEvent};
 use crate::signal::{Signal, SignalBinding, SignalDispatcher};
 use crate::socket_worker::WorkerHandle;
+use crate::state_broadcaster::{StateBroadcaster, StateEvent};
 use crate::config::{self, Config};
+use std::sync::Arc;
 use evdev::KeyCode as Key;
 use lazy_static::lazy_static;
 use log::debug;
@@ -68,6 +70,10 @@ pub struct EventHandler {
     // On failure, walk from top and restore nearest valid frame (anchor ⊆ held_keys).
     // Cleared entirely on ended=true (end_on / explicit exit).
     pattern_frame_stack: Vec<(HashSet<usize>, HashSet<Key>)>,
+    // State broadcasting
+    state_broadcaster: Option<Arc<StateBroadcaster>>,
+    /// Last event sent to the broadcaster — used to deduplicate and for test inspection.
+    pub last_broadcast_state: Option<StateEvent>,
 }
 
 struct TaggedAction {
@@ -85,6 +91,7 @@ impl EventHandler {
         signal_dispatcher: SignalDispatcher,
         fused_nfa: Option<crate::pattern::nfa::Nfa>,
         worker_handle: Option<WorkerHandle>,
+        state_broadcaster: Option<Arc<StateBroadcaster>>,
     ) -> EventHandler {
         EventHandler {
             modifiers: HashSet::new(),
@@ -110,6 +117,8 @@ impl EventHandler {
             pattern_held_keys: HashSet::new(),
             pattern_speculative_buffer: vec![],
             pattern_frame_stack: vec![],
+            state_broadcaster,
+            last_broadcast_state: None,
         }
     }
 
@@ -1010,7 +1019,73 @@ impl EventHandler {
             }
         }
 
+        self.broadcast_state();
         self.dispatch_pattern_signals_and_return(signals, consumed)
+    }
+
+    /// Compute and broadcast the current pattern state if it changed.
+    fn broadcast_state(&mut self) {
+        let event = self.current_state_event();
+        if self.last_broadcast_state.as_ref() == Some(&event) {
+            return;
+        }
+        self.last_broadcast_state = Some(event.clone());
+        if let Some(b) = self.state_broadcaster.clone() {
+            b.broadcast(&event);
+        }
+    }
+
+    fn current_state_event(&self) -> StateEvent {
+        let frame = self.pattern_frame_stack.len();
+        if frame == 0 {
+            return StateEvent::Idle;
+        }
+
+        // Identify the active pattern by checking which pattern's state range
+        // intersects with the machine's current active states.
+        let pattern = self.pattern_machine.as_ref().and_then(|m| {
+            m.nfa.pattern_ranges.iter().find(|(_, &(start, end))| {
+                m.current.iter().any(|&s| s >= start && s < end)
+            }).map(|(name, _)| name.clone())
+        });
+
+        // Anchor keys from the top (most recent) frame.
+        let anchor_keys = {
+            let mut keys: Vec<String> = self.pattern_frame_stack
+                .last().unwrap().1
+                .iter()
+                .map(|k| format!("{k:?}"))
+                .collect();
+            keys.sort();
+            keys
+        };
+
+        // Keys currently held (as tracked by the pattern machine).
+        let held_keys = {
+            let mut keys: Vec<String> = self.pattern_held_keys
+                .iter()
+                .map(|k| format!("{k:?}"))
+                .collect();
+            keys.sort();
+            keys
+        };
+
+        // Edges the NFA currently accepts.
+        let available = self.pattern_machine.as_ref().map(|m| {
+            let mut edges: HashSet<String> = HashSet::new();
+            for &state in &m.current {
+                for t in &m.nfa.states[state].transitions {
+                    if let Some(edge) = &t.edge {
+                        edges.insert(format_edge(edge));
+                    }
+                }
+            }
+            let mut v: Vec<String> = edges.into_iter().collect();
+            v.sort();
+            v
+        }).unwrap_or_default();
+
+        StateEvent::Active { pattern, frame, anchor_keys, held_keys, available }
     }
 
     fn dispatch_pattern_signals_and_return(
@@ -1125,6 +1200,14 @@ lazy_static! {
         Key::KEY_LEFTMETA,
         Key::KEY_RIGHTMETA,
     ];
+}
+
+fn format_edge(edge: &Edge) -> String {
+    match edge {
+        Edge::Press(k) => format!("{k:?}"),
+        Edge::Release(k) => format!("{k:?}!"),
+        Edge::Any => "any".to_string(),
+    }
 }
 
 // ---

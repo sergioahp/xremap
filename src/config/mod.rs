@@ -47,6 +47,8 @@ pub struct Config {
     pub patterns: HashMap<String, String>,
     #[serde(default)]
     pub socket_path: Option<String>,
+    #[serde(default)]
+    pub state_socket: Option<String>,
     #[serde(default = "default_mode")]
     pub default_mode: String,
     #[serde(deserialize_with = "deserialize_virtual_modifiers", default = "Vec::new")]

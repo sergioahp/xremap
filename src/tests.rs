@@ -801,6 +801,7 @@ pub fn assert_actions_with_current_application(
         dispatcher,
         None,
         None,
+        None,
     );
     let mut actual: Vec<Action> = vec![];
 
@@ -833,6 +834,7 @@ fn test_pattern_emit_signal_actions() {
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
         config.fused_nfa.clone(),
+        None,
         None,
     );
 
@@ -895,6 +897,7 @@ fn make_ws_handler() -> (EventHandler, crate::config::Config) {
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
         config.fused_nfa.clone(),
+        None,
         None,
     );
     (handler, config)
@@ -966,6 +969,7 @@ fn make_gui_handler() -> (EventHandler, crate::config::Config) {
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
         config.fused_nfa.clone(),
+        None,
         None,
     );
     (handler, config)
@@ -1082,6 +1086,7 @@ fn test_chord_rollback_replays_buffered_keys() {
         dispatcher,
         config.fused_nfa.clone(),
         None,
+        None,
     );
 
     // Super_L press: consumed (modifier), forwarded via modifier path
@@ -1125,6 +1130,7 @@ fn test_partial_reset_restores_checkpoint() {
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
         config.fused_nfa.clone(),
+        None,
         None,
     );
 
@@ -1170,6 +1176,7 @@ fn test_full_reset_when_anchor_released() {
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
         config.fused_nfa.clone(),
+        None,
         None,
     );
 
@@ -1221,6 +1228,7 @@ fn test_push_frame_extends_frame_after_anchor_release() {
         WMClient::new("static", Box::new(StaticClient { current_application: None })),
         dispatcher,
         config.fused_nfa.clone(),
+        None,
         None,
     );
 
@@ -1280,6 +1288,7 @@ fn test_push_frame_inline_pattern_excludes_other_keys() {
         dispatcher,
         config.fused_nfa.clone(),
         None,
+        None,
     );
 
     // Enter modal: Super_L then D (commit fires)
@@ -1293,6 +1302,174 @@ fn test_push_frame_inline_pattern_excludes_other_keys() {
     let j_actions = h.on_events(&vec![kp(Key::KEY_J)], &config).unwrap();
     let j_forwarded = j_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_J && k.value() == 1));
     assert!(j_forwarded, "J must NOT be consumed by frame 2 (only c is in the sub-NFA); actions={j_actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
+// ── State-broadcast tests ─────────────────────────────────────────────────────
+
+/// Idle before any pattern activity.
+#[test]
+fn test_state_broadcast_idle_initially() {
+    let yaml = indoc! {"
+    patterns:
+      Nav: \"Super_L g => emit(nav.go)\"
+    signals:
+      nav.go:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer, signal_timer, "default", Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher, config.fused_nfa.clone(), None, None,
+    );
+
+    // No events yet: nothing broadcast
+    assert!(h.last_broadcast_state.is_none(), "no broadcast before any event");
+
+    // A non-pattern key causes a reset which broadcasts Idle
+    h.on_events(&vec![kp(Key::KEY_X)], &config).unwrap();
+    assert_eq!(h.last_broadcast_state, Some(crate::state_broadcaster::StateEvent::Idle),
+        "non-pattern key should broadcast Idle; got {:?}", h.last_broadcast_state);
+
+    let _ = fs::remove_file(path);
+}
+
+/// After committing to a pattern, state becomes Active with the right fields.
+#[test]
+fn test_state_broadcast_active_after_commit() {
+    use crate::state_broadcaster::StateEvent;
+    let yaml = indoc! {"
+    patterns:
+      Nav: \"Super_L g => emit(nav.go)\"
+    signals:
+      nav.go:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer, signal_timer, "default", Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher, config.fused_nfa.clone(), None, None,
+    );
+
+    // Super_L: recognition phase (modifier), no commit yet
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    // G: commit fires (emit action), pattern name "Nav" identified
+    h.on_events(&vec![kp(Key::KEY_G)], &config).unwrap();
+
+    match &h.last_broadcast_state {
+        Some(StateEvent::Active { pattern, frame, anchor_keys, .. }) => {
+            assert_eq!(pattern.as_deref(), Some("Nav"), "pattern name should be Nav");
+            assert_eq!(*frame, 1, "frame depth after commit");
+            assert!(anchor_keys.contains(&"KEY_LEFTMETA".to_string()),
+                "Super_L should be in anchor_keys; got {anchor_keys:?}");
+        }
+        other => panic!("expected Active state, got {other:?}"),
+    }
+
+    let _ = fs::remove_file(path);
+}
+
+/// After the pattern fully completes (end_on fires), state returns to Idle.
+#[test]
+fn test_state_broadcast_idle_after_reset() {
+    use crate::state_broadcaster::StateEvent;
+    let yaml = indoc! {"
+    patterns:
+      WinMgmt: \"Super_L d => noop ( j => emit(wm.j) | any => noop )* end_on(Super_L!) => noop\"
+    signals:
+      wm.j:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer, signal_timer, "default", Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher, config.fused_nfa.clone(), None, None,
+    );
+
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+
+    // Verify active
+    assert!(matches!(h.last_broadcast_state, Some(StateEvent::Active { .. })),
+        "should be Active after Super+D commit");
+
+    // Super release triggers end_on → full reset
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &config).unwrap();
+    assert_eq!(h.last_broadcast_state, Some(StateEvent::Idle),
+        "should be Idle after end_on fires; got {:?}", h.last_broadcast_state);
+
+    let _ = fs::remove_file(path);
+}
+
+/// After push_frame switches to sub-NFA, `available` only shows the sub-NFA edges.
+#[test]
+fn test_state_broadcast_available_in_subframe() {
+    use crate::state_broadcaster::StateEvent;
+    let yaml = indoc! {"
+    patterns:
+      WinMgmt: \"Super_L d => noop ( j => emit(wm.j) | c => emit(wm.c) | d! => push_frame(c => [emit(wm.kill), end]) | any => noop )* end_on(Super_L!) => noop\"
+    signals:
+      wm.j:
+        actions: []
+      wm.c:
+        actions: []
+      wm.kill:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer, signal_timer, "default", Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher, config.fused_nfa.clone(), None, None,
+    );
+
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+
+    // In main loop: available should include j, c, d!, any
+    match &h.last_broadcast_state {
+        Some(StateEvent::Active { available, .. }) => {
+            assert!(available.contains(&"KEY_J".to_string()),
+                "main loop should have KEY_J available; got {available:?}");
+            assert!(available.contains(&"KEY_C".to_string()),
+                "main loop should have KEY_C available; got {available:?}");
+        }
+        other => panic!("expected Active, got {other:?}"),
+    }
+
+    // D release: push_frame fires → sub-NFA activated with only c
+    h.on_events(&vec![kr(Key::KEY_D)], &config).unwrap();
+    match &h.last_broadcast_state {
+        Some(StateEvent::Active { available, held_keys, .. }) => {
+            assert!(available.contains(&"KEY_C".to_string()),
+                "sub-NFA should have KEY_C available; got {available:?}");
+            assert!(!available.contains(&"KEY_J".to_string()),
+                "sub-NFA must NOT have KEY_J; got {available:?}");
+            assert!(held_keys.contains(&"KEY_LEFTMETA".to_string()),
+                "Super_L should still be in held_keys; got {held_keys:?}");
+        }
+        other => panic!("expected Active after D release, got {other:?}"),
+    }
 
     let _ = fs::remove_file(path);
 }

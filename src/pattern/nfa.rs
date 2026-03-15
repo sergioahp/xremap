@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::pattern::ast::{ActionSpec, Edge, Node, NodeKind, RepeatKind};
 
@@ -14,15 +14,20 @@ pub struct State {
     pub transitions: Vec<Transition>,
 }
 
+/// A compiled NFA.  When built from multiple named patterns via
+/// [`compile_fused_nfa`], `pattern_ranges` maps each pattern name to the
+/// half-open range `[start, end)` of state indices that belong to it.
 #[derive(Clone, Debug)]
 pub struct Nfa {
     pub states: Vec<State>,
     pub start: usize,
+    /// Pattern name → contiguous state-index range `[start, end)`.
+    pub pattern_ranges: HashMap<String, (usize, usize)>,
 }
 
 impl Nfa {
     pub fn new(states: Vec<State>, start: usize) -> Self {
-        Nfa { states, start }
+        Nfa { states, start, pattern_ranges: HashMap::new() }
     }
 
     /// Returns the epsilon-closure of `start`: the set of all states reachable
@@ -40,6 +45,35 @@ pub fn compile_to_nfa(root: &Node) -> Nfa {
     // ensure end state exists
     builder.add_epsilon(end, None);
     Nfa::new(builder.states, start)
+}
+
+/// Build a fused NFA from multiple named patterns.  Each pattern's compiled
+/// states occupy a contiguous half-open range `[start, end)` stored in
+/// `nfa.pattern_ranges`.  Use this instead of wrapping in `Alt` so we can
+/// identify which pattern owns the current states at runtime.
+pub fn compile_fused_nfa(named_nodes: &[(String, Node)]) -> Nfa {
+    if named_nodes.is_empty() {
+        return compile_to_nfa(&Node::new(NodeKind::Epsilon));
+    }
+    let mut builder = Builder::new();
+    let fused_start = builder.add_state();
+    let fused_end = builder.add_state();
+    let mut pattern_ranges: HashMap<String, (usize, usize)> = HashMap::new();
+
+    for (name, node) in named_nodes {
+        let range_start = builder.states.len();
+        let (s, e) = builder.build(node);
+        let range_end = builder.states.len();
+        builder.add_transition(fused_start, None, s, vec![]);
+        builder.add_transition(e, None, fused_end, vec![]);
+        pattern_ranges.insert(name.clone(), (range_start, range_end));
+    }
+    // terminal epsilon so fused_end isn't a dead end
+    builder.add_epsilon(fused_end, None);
+
+    let mut nfa = Nfa::new(builder.states, fused_start);
+    nfa.pattern_ranges = pattern_ranges;
+    nfa
 }
 
 struct Builder {

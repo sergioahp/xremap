@@ -30,7 +30,10 @@ mod event_handler;
 mod pattern;
 mod signal;
 mod socket_worker;
+mod state_broadcaster;
 use crate::socket_worker::start_worker;
+use crate::state_broadcaster::StateBroadcaster;
+use std::sync::Arc;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -156,6 +159,18 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    let state_broadcaster = config.state_socket.as_deref().and_then(|path| {
+        match StateBroadcaster::bind(path) {
+            Ok(b) => {
+                log::info!("State socket listening on {}", path);
+                Some(Arc::new(b))
+            }
+            Err(e) => {
+                log::warn!("Failed to bind state socket {}: {}", path, e);
+                None
+            }
+        }
+    });
     let mut handler = EventHandler::new(
         timer,
         signal_timer,
@@ -165,6 +180,7 @@ fn main() -> anyhow::Result<()> {
         signal_dispatcher,
         config.fused_nfa.clone(),
         worker_handle,
+        state_broadcaster,
     );
     let vendor = u16::from_str_radix(vendor.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x1234);
     let product = u16::from_str_radix(product.unwrap_or_default().trim_start_matches("0x"), 16).unwrap_or(0x5678);
