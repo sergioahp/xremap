@@ -1055,6 +1055,140 @@ fn test_gui_hold_blocks_other_keys() {
     assert!(!j_forwarded, "J should be blocked while Super+S modifier mode is active");
 }
 
+// ── Speculative buffer + checkpoint frame tests ──────────────────────────────
+
+/// Pattern fails in recognition phase (before first action fires): non-modifier
+/// keys buffered during recognition must be replayed to the virtual device.
+#[test]
+fn test_chord_rollback_replays_buffered_keys() {
+    // "Super_L d c => noop": recognition phase consumes Super_L (modifier) and d
+    // (non-modifier, buffered). When Z is pressed instead of C, the pattern fails
+    // with no commit, so D press must be replayed and Z must fall through.
+    let yaml = indoc! {"
+    patterns:
+      Chord: \"Super_L d c => noop\"
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+    );
+
+    // Super_L press: consumed (modifier), forwarded via modifier path
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    // D press: consumed into recognition phase, buffered
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+    // Z press: pattern fails — D buffered press must be replayed, Z falls through
+    let actions = h.on_events(&vec![kp(Key::KEY_Z)], &config).unwrap();
+
+    let d_replayed = actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_D && k.value() == 1));
+    let z_forwarded = actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_Z && k.value() == 1));
+    assert!(d_replayed, "D press must be replayed from speculative buffer on pattern failure; actions={actions:?}");
+    assert!(z_forwarded, "Z press must fall through after pattern failure; actions={actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
+/// After the commit point, failures with anchor keys still held should perform
+/// a partial reset (restore checkpoint states) rather than a full reset.
+/// The failing key falls through; subsequent loop keys are still consumed.
+#[test]
+fn test_partial_reset_restores_checkpoint() {
+    // Pattern: Super_L s => noop ( o => noop )* end_on(Super_L!) => noop
+    // Commit fires on S press (noop action). Checkpoint: anchor={Super_L, S}.
+    // K press: not in loop, fails → partial reset (anchors still held) → K falls through.
+    // O press: checkpoint restored, o consumed in loop (not forwarded).
+    let yaml = indoc! {"
+    patterns:
+      Modal: \"Super_L s => noop ( o => noop )* end_on(Super_L!) => noop\"
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+    );
+
+    // Enter modal: Super_L then S (commit fires)
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &config).unwrap();
+
+    // K press: not in loop — partial reset, K falls through
+    let k_actions = h.on_events(&vec![kp(Key::KEY_K)], &config).unwrap();
+    let k_forwarded = k_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_K && k.value() == 1));
+    assert!(k_forwarded, "K must fall through after partial reset; actions={k_actions:?}");
+
+    // O press: checkpoint restored, should be consumed by loop (not forwarded)
+    let o_actions = h.on_events(&vec![kp(Key::KEY_O)], &config).unwrap();
+    let o_forwarded = o_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_O && k.value() == 1));
+    assert!(!o_forwarded, "O must be consumed by the loop after partial reset; actions={o_actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
+/// After the commit point, if an anchor key is released, the next failure must
+/// trigger a full reset (anchor check fails) rather than a partial reset.
+#[test]
+fn test_full_reset_when_anchor_released() {
+    // Same pattern as above. Anchor at commit: {Super_L, S}.
+    // Release Super_L (anchor gone). Then O press fails (machine was reset, Super_L
+    // not held so re-arm doesn't reach loop state) — full reset path taken.
+    // After full reset, O must fall through (not consumed by loop).
+    let yaml = indoc! {"
+    patterns:
+      Modal: \"Super_L s => noop ( o => noop )* end_on(Super_L!) => noop\"
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+    );
+
+    // Enter modal: Super_L then S (commit fires, anchor={Super_L, S})
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &config).unwrap();
+
+    // Release Super_L: anchor key released; note this is an end_on key so the
+    // pattern ends via end_on, causing a full reset regardless.
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &config).unwrap();
+
+    // O press: pattern has fully reset (no Super_L held to re-arm), must fall through
+    let o_actions = h.on_events(&vec![kp(Key::KEY_O)], &config).unwrap();
+    let o_forwarded = o_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_O && k.value() == 1));
+    assert!(o_forwarded, "O must fall through after full reset when anchor released; actions={o_actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
 fn write_temp_config(yaml: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(

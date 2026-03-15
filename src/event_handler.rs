@@ -59,6 +59,14 @@ pub struct EventHandler {
     pattern_machine: Option<crate::pattern::Machine>,
     next_signal_due: Option<Instant>,
     worker_handle: Option<WorkerHandle>,
+    // All currently held keys (for anchor key validation after partial reset)
+    pattern_held_keys: HashSet<Key>,
+    // Non-modifier events consumed during recognition phase, pending replay on failure
+    pattern_speculative_buffer: Vec<(Key, i32)>,
+    // Whether pattern machine has committed (fired its first action)
+    pattern_committed: bool,
+    // Checkpoint at commit: (NFA state set, anchor keys held at that time)
+    pattern_checkpoint: Option<(HashSet<usize>, HashSet<Key>)>,
 }
 
 struct TaggedAction {
@@ -98,12 +106,19 @@ impl EventHandler {
             pattern_machine: fused_nfa.map(crate::pattern::Machine::new),
             next_signal_due: None,
             worker_handle,
+            pattern_held_keys: HashSet::new(),
+            pattern_speculative_buffer: vec![],
+            pattern_committed: false,
+            pattern_checkpoint: None,
         }
     }
 
     pub fn reload_from_config(&mut self, config: &Config) -> Result<(), Box<dyn Error>> {
         self.signal_dispatcher = make_signal_dispatcher(config);
         self.pattern_machine = config.fused_nfa.as_ref().map(|nfa| crate::pattern::Machine::new(nfa.clone()));
+        self.pattern_committed = false;
+        self.pattern_checkpoint = None;
+        self.pattern_speculative_buffer.clear();
         self.signal_dispatcher.stop_all();
         self.schedule_signal_timer(None, Instant::now())?;
         // worker_handle is process-lifetime; not reloaded on config change.
@@ -164,6 +179,12 @@ impl EventHandler {
         let mut send_original_relative_event = false;
         // Apply keymap
         for (key, value) in key_values.into_iter() {
+            // Track held keys for pattern anchor validation (before pattern processing)
+            if value == RELEASE {
+                self.pattern_held_keys.remove(&key);
+            } else if value == PRESS {
+                self.pattern_held_keys.insert(key);
+            }
             if value != REPEAT {
                 let edge = if value == RELEASE {
                     Edge::Release(key)
@@ -829,44 +850,117 @@ impl EventHandler {
 
         let res = self.pattern_machine.as_mut().unwrap().step(edge);
         let mut consumed = res.consumed;
-        let (mut signals, ended) = signals_from_actions(res.actions);
+        let (mut signals, ended) = signals_from_actions(res.actions.clone());
+        let has_actions = !res.actions.is_empty();
         let needs_reset = !res.alive || ended;
 
+        // Commit point: first time actions fire while still in recognition phase
+        if consumed && has_actions && !self.pattern_committed {
+            self.pattern_committed = true;
+            self.pattern_speculative_buffer.clear(); // consumed by pattern, not replayed
+            // Save checkpoint if machine stays alive (has an active loop to return to)
+            if res.alive && !ended {
+                let states = self.pattern_machine.as_ref().unwrap().current.clone();
+                self.pattern_checkpoint = Some((states, self.pattern_held_keys.clone()));
+            }
+        } else if consumed && !self.pattern_committed {
+            // Still in recognition phase: buffer non-modifier consumed events
+            let is_modifier = match edge {
+                Edge::Press(k) | Edge::Release(k) => MODIFIER_KEYS.contains(k),
+                Edge::Any => false,
+            };
+            if !is_modifier {
+                let value = if matches!(edge, Edge::Press(_)) { PRESS } else { RELEASE };
+                if let Edge::Press(k) | Edge::Release(k) = edge {
+                    self.pattern_speculative_buffer.push((*k, value));
+                }
+            }
+        }
+
         if needs_reset {
-            self.pattern_machine.as_mut().unwrap().reset();
-            // Re-arm: replay held modifier presses so patterns that start with
-            // a modifier (e.g. Super_L leftbrace) are restored to their
-            // post-modifier state without waiting for the key to be re-pressed.
-            let held: Vec<Key> = MODIFIER_KEYS.iter()
+            // Active phase failure with valid checkpoint → partial reset
+            if !ended && self.pattern_committed {
+                if let Some((checkpoint_states, anchor_keys)) = &self.pattern_checkpoint {
+                    if anchor_keys.iter().all(|k| self.pattern_held_keys.contains(k)) {
+                        self.pattern_machine.as_mut().unwrap().current = checkpoint_states.clone();
+                        return self.dispatch_pattern_signals_and_return(signals, consumed);
+                    }
+                }
+            }
+
+            // Full reset path
+            if !self.pattern_committed {
+                // Replay speculative buffer — these were consumed but pattern ultimately failed
+                let buffer = std::mem::take(&mut self.pattern_speculative_buffer);
+                for (key, value) in buffer {
+                    self.send_key(&key, value);
+                }
+            }
+
+            self.pattern_committed = false;
+            self.pattern_checkpoint = None;
+            self.pattern_speculative_buffer.clear();
+
+            // Reset + re-arm with currently held modifier keys
+            let m = self.pattern_machine.as_mut().unwrap();
+            m.reset();
+            let held_mods: Vec<Key> = MODIFIER_KEYS.iter()
                 .filter(|k| self.modifiers.contains(k))
                 .copied()
                 .collect();
-            for key in held {
-                let m = self.pattern_machine.as_mut().unwrap();
+            for key in held_mods {
                 let saved = m.current.clone();
                 let r = m.step(&Edge::Press(key));
                 if !r.alive {
                     m.current = saved;
                 }
             }
-            // If the machine died without an explicit end_on (i.e. the key was simply
-            // unrecognized), try the triggering edge again on the freshly re-armed machine.
-            // This handles the case where the machine was in a stale post-modifier state
-            // and the current key (e.g. Super or S) should now start/advance a pattern.
+
+            // Retry: if not ended, try the triggering edge on the re-armed machine.
+            // Handles second-session patterns and cases where the reset key starts a new pattern.
             if !ended {
                 let m = self.pattern_machine.as_mut().unwrap();
                 let saved = m.current.clone();
                 let retry = m.step(edge);
                 if retry.alive {
+                    let retry_has_actions = !retry.actions.is_empty();
                     let (retry_signals, _) = signals_from_actions(retry.actions);
                     signals.extend(retry_signals);
                     consumed = true;
+                    if retry_has_actions {
+                        self.pattern_committed = true;
+                        self.pattern_speculative_buffer.clear();
+                        if retry.alive {
+                            let states = self.pattern_machine.as_ref().unwrap().current.clone();
+                            self.pattern_checkpoint = Some((states, self.pattern_held_keys.clone()));
+                        }
+                    } else {
+                        // Retry consumed but no action yet — buffer it (recognition phase)
+                        let is_modifier = match edge {
+                            Edge::Press(k) | Edge::Release(k) => MODIFIER_KEYS.contains(k),
+                            Edge::Any => false,
+                        };
+                        if !is_modifier {
+                            let val = if matches!(edge, Edge::Press(_)) { PRESS } else { RELEASE };
+                            if let Edge::Press(k) | Edge::Release(k) = edge {
+                                self.pattern_speculative_buffer.push((*k, val));
+                            }
+                        }
+                    }
                 } else {
                     m.current = saved;
                 }
             }
         }
 
+        self.dispatch_pattern_signals_and_return(signals, consumed)
+    }
+
+    fn dispatch_pattern_signals_and_return(
+        &mut self,
+        signals: Vec<Signal>,
+        consumed: bool,
+    ) -> Result<bool, Box<dyn Error>> {
         if !signals.is_empty() || self.signal_dispatcher.has_repeats() {
             let now = Instant::now();
             let actions = self.signal_dispatcher.handle_signals(signals, now);
@@ -875,7 +969,6 @@ impl EventHandler {
             let delay = next_due.map(|due| due.saturating_duration_since(now));
             self.schedule_signal_timer(delay, now)?;
         }
-
         Ok(consumed)
     }
 
