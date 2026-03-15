@@ -969,11 +969,14 @@ impl EventHandler {
             self.pattern_frame_stack.clear();
             self.pattern_speculative_buffer.clear();
 
-            // Reset + re-arm with held modifiers
+            // Reset + re-arm with held modifiers.
+            // Use pattern_held_keys (updated before process_patterns is called) rather than
+            // self.modifiers, which may still contain the just-released key at this point
+            // because update_modifier() runs after process_patterns returns.
             let m = self.pattern_machine.as_mut().unwrap();
             m.reset();
             let held_mods: Vec<Key> = MODIFIER_KEYS.iter()
-                .filter(|k| self.modifiers.contains(k))
+                .filter(|k| self.pattern_held_keys.contains(k))
                 .copied()
                 .collect();
             for key in held_mods {
