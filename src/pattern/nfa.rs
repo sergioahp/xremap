@@ -24,6 +24,14 @@ impl Nfa {
     pub fn new(states: Vec<State>, start: usize) -> Self {
         Nfa { states, start }
     }
+
+    /// Returns the epsilon-closure of `start`: the set of all states reachable
+    /// from `start` via zero or more epsilon (None-edge) transitions.
+    pub fn epsilon_closure(&self, start: usize) -> HashSet<usize> {
+        let mut result = HashSet::new();
+        collect_epsilons(self, start, &mut result, &mut vec![]);
+        result
+    }
 }
 
 pub fn compile_to_nfa(root: &Node) -> Nfa {
@@ -50,7 +58,17 @@ impl Builder {
     }
 
     fn add_transition(&mut self, from: usize, edge: Option<Edge>, to: usize, actions: Vec<ActionSpec>) {
-        self.states[from].transitions.push(Transition { edge, target: to, actions });
+        let mut resolved = Vec::with_capacity(actions.len());
+        for a in actions {
+            resolved.push(match a {
+                ActionSpec::PushFrameOf(inner) => {
+                    let (sub_start, _) = self.build(&inner);
+                    ActionSpec::PushFrameAt(sub_start)
+                }
+                other => other,
+            });
+        }
+        self.states[from].transitions.push(Transition { edge, target: to, actions: resolved });
     }
 
     fn add_epsilon(&mut self, from: usize, to: Option<usize>) {

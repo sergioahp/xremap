@@ -850,9 +850,29 @@ impl EventHandler {
         let res = self.pattern_machine.as_mut().unwrap().step(edge);
         let mut consumed = res.consumed;
         let committed = !self.pattern_frame_stack.is_empty();
-        let push_frame = res.actions.iter().any(|a| matches!(a, ActionSpec::PushFrame));
+        // For PushFrame: frame holds current states (restore point = current loop states).
+        // For PushFrameAt: frame also holds current states as restore point, but machine will
+        // be switched to the sub-NFA states so that only sub-NFA transitions fire next.
+        // sub_nfa_targets collects the epsilon-closures of inline sub-NFA starts.
+        let mut push_frame_states: Vec<HashSet<usize>> = Vec::new();
+        let mut sub_nfa_targets: Vec<HashSet<usize>> = Vec::new();
+        for a in res.actions.iter() {
+            match a {
+                ActionSpec::PushFrame => {
+                    // Push current machine states (existing behavior)
+                    push_frame_states.push(self.pattern_machine.as_ref().unwrap().current.clone());
+                }
+                ActionSpec::PushFrameAt(state) => {
+                    // Frame restore point = current loop states (so failure in sub-NFA can fall through)
+                    push_frame_states.push(self.pattern_machine.as_ref().unwrap().current.clone());
+                    // The machine will be switched to sub-NFA states so only sub-NFA fires
+                    sub_nfa_targets.push(self.pattern_machine.as_ref().unwrap().nfa.epsilon_closure(*state));
+                }
+                _ => {}
+            }
+        }
         let (mut signals, ended) = signals_from_actions(res.actions.clone());
-        let has_actions = res.actions.iter().any(|a| !matches!(a, ActionSpec::PushFrame));
+        let has_actions = res.actions.iter().any(|a| !matches!(a, ActionSpec::PushFrame | ActionSpec::PushFrameOf(_) | ActionSpec::PushFrameAt(_)));
         let needs_reset = !res.alive || ended;
 
         // Commit point: first actions fire in recognition phase → push initial frame
@@ -878,12 +898,16 @@ impl EventHandler {
             }
         }
 
-        // Explicit push_frame action in active phase
-        if committed && push_frame && res.alive && !ended {
-            self.pattern_frame_stack.push((
-                self.pattern_machine.as_ref().unwrap().current.clone(),
-                self.pattern_held_keys.clone(),
-            ));
+        // Explicit push_frame actions in active phase
+        if committed && !push_frame_states.is_empty() && res.alive && !ended {
+            for frame_states in push_frame_states {
+                self.pattern_frame_stack.push((frame_states, self.pattern_held_keys.clone()));
+            }
+            // For inline sub-NFA frames: switch machine.current to sub-NFA states so that
+            // only transitions defined in the sub-NFA fire until the sub-NFA completes or fails.
+            if let Some(sub_states) = sub_nfa_targets.into_iter().last() {
+                self.pattern_machine.as_mut().unwrap().current = sub_states;
+            }
         }
 
         if needs_reset {
@@ -938,8 +962,16 @@ impl EventHandler {
                 let saved = m.current.clone();
                 let retry = m.step(edge);
                 if retry.alive {
-                    let retry_has_actions = retry.actions.iter().any(|a| !matches!(a, ActionSpec::PushFrame));
-                    let retry_push = retry.actions.iter().any(|a| matches!(a, ActionSpec::PushFrame));
+                    let retry_has_actions = retry.actions.iter().any(|a| !matches!(a, ActionSpec::PushFrame | ActionSpec::PushFrameOf(_) | ActionSpec::PushFrameAt(_)));
+                    let retry_push_states: Vec<HashSet<usize>> = retry.actions.iter().filter_map(|a| match a {
+                        ActionSpec::PushFrame => {
+                            Some(self.pattern_machine.as_ref().unwrap().current.clone())
+                        }
+                        ActionSpec::PushFrameAt(state) => {
+                            Some(self.pattern_machine.as_ref().unwrap().nfa.epsilon_closure(*state))
+                        }
+                        _ => None,
+                    }).collect();
                     let (retry_signals, _) = signals_from_actions(retry.actions);
                     signals.extend(retry_signals);
                     consumed = true;
@@ -948,11 +980,8 @@ impl EventHandler {
                             self.pattern_machine.as_ref().unwrap().current.clone(),
                             self.pattern_held_keys.clone(),
                         ));
-                        if retry_push {
-                            self.pattern_frame_stack.push((
-                                self.pattern_machine.as_ref().unwrap().current.clone(),
-                                self.pattern_held_keys.clone(),
-                            ));
+                        for frame_states in retry_push_states {
+                            self.pattern_frame_stack.push((frame_states, self.pattern_held_keys.clone()));
                         }
                     } else {
                         // Retry consumed in recognition phase — buffer it
@@ -1014,7 +1043,7 @@ fn signals_from_actions(specs: Vec<ActionSpec>) -> (Vec<Signal>, bool) {
     for spec in specs {
         match spec {
             ActionSpec::Emit(name, kind) => signals.push(Signal { name, kind }),
-            ActionSpec::Noop | ActionSpec::PushFrame => {}
+            ActionSpec::Noop | ActionSpec::PushFrame | ActionSpec::PushFrameOf(_) | ActionSpec::PushFrameAt(_) => {}
             ActionSpec::End => { ended = true; }
         }
     }

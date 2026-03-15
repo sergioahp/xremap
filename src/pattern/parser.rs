@@ -260,6 +260,16 @@ impl<'a> Parser<'a> {
             return Ok(ActionSpec::End);
         }
         if ident == "push_frame" {
+            self.skip_ws();
+            if self.peek() == Some('(') {
+                self.bump(); // consume '('
+                let inner = self.parse_expr()?;
+                self.skip_ws();
+                if !self.match_char(')') {
+                    return Err(ParseError("expected ')' after push_frame expression".into()));
+                }
+                return Ok(ActionSpec::PushFrameOf(Box::new(inner)));
+            }
             return Ok(ActionSpec::PushFrame);
         }
         if !self.match_char('(') {

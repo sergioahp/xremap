@@ -21,7 +21,9 @@ pub enum ActionSpec {
     Emit(String, crate::signal::SignalKind),
     Noop,
     End,
-    PushFrame,  // push current NFA states + held keys as a new frame on the stack
+    PushFrame,              // push current NFA states (existing behavior)
+    PushFrameOf(Box<Node>), // inline sub-pattern: resolved at compile time
+    PushFrameAt(usize),     // runtime: push epsilon-closure of this NFA state
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
