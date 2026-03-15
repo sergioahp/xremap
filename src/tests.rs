@@ -5,6 +5,7 @@ use indoc::indoc;
 use nix::sys::timerfd::{ClockId, TimerFd, TimerFlags};
 use std::path::Path;
 use std::time::Duration;
+use std::{fs, path::PathBuf};
 
 use crate::client::{Client, WMClient};
 use crate::device::InputDeviceInfo;
@@ -12,7 +13,7 @@ use crate::{
     action::Action,
     config::{keymap::build_keymap_table, Config},
     event::{Event, KeyEvent, KeyValue, RelativeEvent},
-    event_handler::EventHandler,
+    event_handler::{make_signal_dispatcher, EventHandler},
 };
 
 struct StaticClient {
@@ -120,7 +121,7 @@ fn test_relative_events() {
 
 #[test]
 fn verify_disguised_relative_events() {
-    use crate::event_handler::DISGUISED_EVENT_OFFSETTER;
+    use crate::config::DISGUISED_EVENT_OFFSETTER;
     // Verifies that the event offsetter used to "disguise" relative events into key event
     // is a bigger number than the biggest one a scancode had at the time of writing this (26 december 2022)
     const _: () = assert!(0x2e7 < DISGUISED_EVENT_OFFSETTER);
@@ -789,15 +790,699 @@ pub fn assert_actions_with_current_application(
     let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
     let mut config: Config = serde_yaml::from_str(config_yaml).unwrap();
     config.keymap_table = build_keymap_table(&config.keymap);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let dispatcher = crate::signal::SignalDispatcher::new(std::collections::HashMap::new());
     let mut event_handler = EventHandler::new(
         timer,
+        signal_timer,
         "default",
         Duration::from_micros(0),
         WMClient::new("static", Box::new(StaticClient { current_application })),
+        dispatcher,
+        None,
+        None,
+        None,
     );
     let mut actual: Vec<Action> = vec![];
 
     actual.append(&mut event_handler.on_events(&events, &config).unwrap());
 
     assert_eq!(format!("{actions:?}"), format!("{:?}", actual));
+}
+
+#[test]
+fn test_pattern_emit_signal_actions() {
+    let yaml = indoc! {"
+    signals:
+      repeat.left:
+        repeat: false
+        actions:
+          - { press: b }
+    patterns:
+      Nav: \"a => emit_start(repeat.left) a! => emit_stop(repeat.left)\"
+    "};
+    let path = write_temp_config(yaml);
+    let mut config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let dispatcher = make_signal_dispatcher(&config);
+    let mut handler = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+        None,
+    );
+
+    let actions = handler
+        .on_events(
+            &vec![Event::KeyEvent(
+                get_input_device_info(),
+                KeyEvent::new(Key::KEY_A, KeyValue::Press),
+            )],
+            &config,
+        )
+        .unwrap();
+    assert!(actions
+        .iter()
+        .any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_B && k.value() == 1)));
+
+    let actions2 = handler
+        .on_events(
+            &vec![Event::KeyEvent(
+                get_input_device_info(),
+                KeyEvent::new(Key::KEY_A, KeyValue::Release),
+            )],
+            &config,
+        )
+        .unwrap();
+    assert!(actions2.is_empty());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn parse_move_pattern_from_config_sample() {
+    let pat = r#"Super_L d => emit(float.enable) ( d!|ε ) ( h => emit_start(move.left) | h! => emit_stop(move.left) ε => emit(move.stop) | j => emit_start(move.down) | j! => emit_stop(move.down) ε => emit(move.stop) | k => emit_start(move.up) | k! => emit_stop(move.up) ε => emit(move.stop) | l => emit_start(move.right) | l! => emit_stop(move.right) ε => emit(move.stop) | d! => noop )* end_on(Super_L!) => emit(move.stop)"#;
+    let _ = crate::pattern::parser::parse_pattern(pat).expect("pattern should parse");
+}
+
+// ── Workspace-toggle pattern tests ──────────────────────────────────────────
+
+const WS_PREV_YAML: &str = indoc! {"
+signals:
+  ws.prev:
+    repeat: false
+    actions:
+      - { press: w }
+patterns:
+  WorkspacePrevHold: \"Super_L leftbrace => emit(ws.prev) ( leftbrace! => emit(ws.prev) leftbrace => emit(ws.prev) )* end_on(Super_L!) => noop\"
+"};
+
+fn make_ws_handler() -> (EventHandler, crate::config::Config) {
+    let path = write_temp_config(WS_PREV_YAML);
+    let config = crate::config::load_configs(&[path]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let handler = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+        None,
+    );
+    (handler, config)
+}
+
+fn kp(key: Key) -> Event<'static> {
+    Event::KeyEvent(get_input_device_info(), KeyEvent::new(key, KeyValue::Press))
+}
+
+fn kr(key: Key) -> Event<'static> {
+    Event::KeyEvent(get_input_device_info(), KeyEvent::new(key, KeyValue::Release))
+}
+
+fn emits_w(actions: &[Action]) -> bool {
+    actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_W && k.value() == 1))
+}
+
+/// Super+[ emits ws.prev on press.
+#[test]
+fn test_ws_prev_basic() {
+    let (mut h, cfg) = make_ws_handler();
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    let actions = h.on_events(&vec![kp(Key::KEY_LEFTBRACE)], &cfg).unwrap();
+    assert!(emits_w(&actions), "Super+[ should emit ws.prev");
+}
+
+/// Super+J (unrelated key) kills the pattern; Super+[ while still holding Super
+/// should still emit ws.prev via sticky restart.
+#[test]
+fn test_ws_prev_after_other_super_chord() {
+    let (mut h, cfg) = make_ws_handler();
+    // Press Super — pattern arms
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    // Press+release J — kills WorkspacePrevHold, but Super still held
+    h.on_events(&vec![kp(Key::KEY_J)], &cfg).unwrap();
+    h.on_events(&vec![kr(Key::KEY_J)], &cfg).unwrap();
+    // Press [ — sticky restart should have re-armed; expect ws.prev
+    let actions = h.on_events(&vec![kp(Key::KEY_LEFTBRACE)], &cfg).unwrap();
+    assert!(emits_w(&actions), "Super+[ after Super+J should emit ws.prev via sticky restart");
+}
+
+// ── any-wildcard / modifier-mode tests ──────────────────────────────────────
+
+const GUI_HOLD_YAML: &str = indoc! {"
+signals:
+  gui.open:
+    repeat: false
+    actions:
+      - { press: o }
+  gui.close:
+    repeat: false
+    actions:
+      - { press: c }
+patterns:
+  GuiHold: \"Super_L s => noop ( o => emit(gui.open) | o! => emit(gui.close) | any => noop )* end_on(Super_L! | s!) => emit(gui.close)\"
+"};
+
+fn make_gui_handler() -> (EventHandler, crate::config::Config) {
+    let path = write_temp_config(GUI_HOLD_YAML);
+    let config = crate::config::load_configs(&[path]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let handler = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+        None,
+    );
+    (handler, config)
+}
+
+fn emits_key(actions: &[Action], key: Key) -> bool {
+    actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == key && k.value() == 1))
+}
+
+/// After a GuiHold session ends, a fresh Super+S+O must still work.
+/// Regression: machine left in stale post-Super state caused S press to miss the
+/// pattern and fall through to keymap; O then fired the wrong action (volume up).
+#[test]
+fn test_gui_hold_second_session() {
+    let (mut h, cfg) = make_gui_handler();
+    // First session: enter and exit GuiHold
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+    h.on_events(&vec![kr(Key::KEY_S)], &cfg).unwrap(); // exit via s!
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &cfg).unwrap();
+
+    // Second session: fresh Super+S+O — O must open GUI, not fire keymap
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+    let open = h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
+    assert!(emits_key(&open, Key::KEY_O), "second session O press must open GUI, not fire keymap");
+}
+
+/// Releasing S while GUI is open (O held) must emit gui.close via end_on action.
+#[test]
+fn test_gui_hold_close_on_s_release() {
+    let (mut h, cfg) = make_gui_handler();
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap(); // open
+
+    // Release S while Super+O still held — end_on(s!) must close the GUI
+    let close = h.on_events(&vec![kr(Key::KEY_S)], &cfg).unwrap();
+    assert!(emits_key(&close, Key::KEY_C), "releasing S must close GUI via end_on emit(gui.close)");
+}
+
+/// Super+S+O opens the GUI; releasing O closes it; pressing O again reopens.
+#[test]
+fn test_gui_hold_open_close_repeat() {
+    let (mut h, cfg) = make_gui_handler();
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+
+    let open = h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
+    assert!(emits_key(&open, Key::KEY_O), "first O press should open GUI");
+
+    let close = h.on_events(&vec![kr(Key::KEY_O)], &cfg).unwrap();
+    assert!(emits_key(&close, Key::KEY_C), "O release should close GUI");
+
+    let reopen = h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
+    assert!(emits_key(&reopen, Key::KEY_O), "second O press should reopen GUI");
+}
+
+/// After releasing S (or Super) from GuiHold, normal keys must not be swallowed.
+#[test]
+fn test_gui_hold_keys_forwarded_after_exit() {
+    let (mut h, cfg) = make_gui_handler();
+    // Enter GuiHold: Super+S+O (open), then release S to exit the mode
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_O)], &cfg).unwrap();
+    h.on_events(&vec![kr(Key::KEY_S)], &cfg).unwrap(); // exit via s!
+    h.on_events(&vec![kr(Key::KEY_O)], &cfg).unwrap();
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &cfg).unwrap();
+
+    // Now `a` must be forwarded — machine must not still be in the swallowing loop
+    let actions = h.on_events(&vec![kp(Key::KEY_A)], &cfg).unwrap();
+    let a_forwarded = actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_A));
+    assert!(a_forwarded, "KEY_A must be forwarded after GuiHold exits via s!");
+}
+
+/// While Super+S held (no O), pressing J should NOT fall through to keymap.
+#[test]
+fn test_gui_hold_blocks_other_keys() {
+    let (mut h, cfg) = make_gui_handler();
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &cfg).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &cfg).unwrap();
+
+    // J press while in modifier mode — should be consumed, not forwarded
+    let actions = h.on_events(&vec![kp(Key::KEY_J)], &cfg).unwrap();
+    let j_forwarded = actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_J));
+    assert!(!j_forwarded, "J should be blocked while Super+S modifier mode is active");
+}
+
+// ── Speculative buffer + checkpoint frame tests ──────────────────────────────
+
+/// Pattern fails in recognition phase (before first action fires): non-modifier
+/// keys buffered during recognition must be replayed to the virtual device.
+#[test]
+fn test_chord_rollback_replays_buffered_keys() {
+    // "Super_L d c => noop": recognition phase consumes Super_L (modifier) and d
+    // (non-modifier, buffered). When Z is pressed instead of C, the pattern fails
+    // with no commit, so D press must be replayed and Z must fall through.
+    let yaml = indoc! {"
+    patterns:
+      Chord: \"Super_L d c => noop\"
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+        None,
+    );
+
+    // Super_L press: consumed (modifier), forwarded via modifier path
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    // D press: consumed into recognition phase, buffered
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+    // Z press: pattern fails — D buffered press must be replayed, Z falls through
+    let actions = h.on_events(&vec![kp(Key::KEY_Z)], &config).unwrap();
+
+    let d_replayed = actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_D && k.value() == 1));
+    let z_forwarded = actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_Z && k.value() == 1));
+    assert!(d_replayed, "D press must be replayed from speculative buffer on pattern failure; actions={actions:?}");
+    assert!(z_forwarded, "Z press must fall through after pattern failure; actions={actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
+/// After the commit point, failures with anchor keys still held should perform
+/// a partial reset (restore checkpoint states) rather than a full reset.
+/// The failing key falls through; subsequent loop keys are still consumed.
+#[test]
+fn test_partial_reset_restores_checkpoint() {
+    // Pattern: Super_L s => noop ( o => noop )* end_on(Super_L!) => noop
+    // Commit fires on S press (noop action). Checkpoint: anchor={Super_L, S}.
+    // K press: not in loop, fails → partial reset (anchors still held) → K falls through.
+    // O press: checkpoint restored, o consumed in loop (not forwarded).
+    let yaml = indoc! {"
+    patterns:
+      Modal: \"Super_L s => noop ( o => noop )* end_on(Super_L!) => noop\"
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+        None,
+    );
+
+    // Enter modal: Super_L then S (commit fires)
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &config).unwrap();
+
+    // K press: not in loop — partial reset, K falls through
+    let k_actions = h.on_events(&vec![kp(Key::KEY_K)], &config).unwrap();
+    let k_forwarded = k_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_K && k.value() == 1));
+    assert!(k_forwarded, "K must fall through after partial reset; actions={k_actions:?}");
+
+    // O press: checkpoint restored, should be consumed by loop (not forwarded)
+    let o_actions = h.on_events(&vec![kp(Key::KEY_O)], &config).unwrap();
+    let o_forwarded = o_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_O && k.value() == 1));
+    assert!(!o_forwarded, "O must be consumed by the loop after partial reset; actions={o_actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
+/// After the commit point, if an anchor key is released, the next failure must
+/// trigger a full reset (anchor check fails) rather than a partial reset.
+#[test]
+fn test_full_reset_when_anchor_released() {
+    // Same pattern as above. Anchor at commit: {Super_L, S}.
+    // Release Super_L (anchor gone). Then O press fails (machine was reset, Super_L
+    // not held so re-arm doesn't reach loop state) — full reset path taken.
+    // After full reset, O must fall through (not consumed by loop).
+    let yaml = indoc! {"
+    patterns:
+      Modal: \"Super_L s => noop ( o => noop )* end_on(Super_L!) => noop\"
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+        None,
+    );
+
+    // Enter modal: Super_L then S (commit fires, anchor={Super_L, S})
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_S)], &config).unwrap();
+
+    // Release Super_L: anchor key released; note this is an end_on key so the
+    // pattern ends via end_on, causing a full reset regardless.
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &config).unwrap();
+
+    // O press: pattern has fully reset (no Super_L held to re-arm), must fall through
+    let o_actions = h.on_events(&vec![kp(Key::KEY_O)], &config).unwrap();
+    let o_forwarded = o_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_O && k.value() == 1));
+    assert!(o_forwarded, "O must fall through after full reset when anchor released; actions={o_actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
+/// Verifies that push_frame(expr) extends the active frame after the d! anchor key is released,
+/// using an inline sub-pattern. Frame 2 only watches `c => [emit(test.kill), end]`.
+/// While D is held, j fires test.j and c fires test.c via the main loop.
+/// D release fires push_frame, frame 2 has only the `c => [emit(test.kill), end]` sub-NFA.
+/// After D is released, c in frame 2 fires test.kill and ends everything. Super release
+/// falls through (full reset already done). j in frame 2 is NOT consumed (not in sub-NFA).
+#[test]
+fn test_push_frame_extends_frame_after_anchor_release() {
+    let yaml = indoc! {"
+    patterns:
+      WinMgmt: \"Super_L d => noop ( j => emit(test.j) | c => emit(test.c) | d! => push_frame(c => [emit(test.kill), end]) | any => noop )* end_on(Super_L!) => noop\"
+    signals:
+      test.j:
+        actions: []
+      test.c:
+        actions: []
+      test.kill:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+        None,
+    );
+
+    // Super_L press: enters recognition phase (modifier, consumed)
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    // D press: commit fires (noop action), frame pushed with anchor={Super, D}
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+
+    // J press while D held: test.j signal should fire, J not forwarded
+    let j_actions = h.on_events(&vec![kp(Key::KEY_J)], &config).unwrap();
+    let j_forwarded = j_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_J && k.value() == 1));
+    assert!(!j_forwarded, "J must be consumed by the loop while D is held; actions={j_actions:?}");
+
+    // D release: push_frame(c => [emit(test.kill), end]) fires — frame 2 has only `c` sub-NFA
+    h.on_events(&vec![kr(Key::KEY_D)], &config).unwrap();
+
+    // C press in frame 2: test.kill fires, end causes full reset
+    let c_actions = h.on_events(&vec![kp(Key::KEY_C)], &config).unwrap();
+    let c_forwarded = c_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_C && k.value() == 1));
+    assert!(!c_forwarded, "C must be consumed by frame 2 after D release; actions={c_actions:?}");
+
+    // After full reset (from end), a new key should fall through
+    let x_actions = h.on_events(&vec![kp(Key::KEY_X)], &config).unwrap();
+    let x_forwarded = x_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_X && k.value() == 1));
+    assert!(x_forwarded, "X must fall through after full reset via end; actions={x_actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
+/// Verifies that push_frame(expr) with an inline sub-pattern excludes keys not in the sub-pattern.
+/// After D release, frame 2 has only `c => [emit(test.kill), end]`.
+/// Pressing j in frame 2 should NOT be consumed — it falls through as a forwarded KeyEvent.
+#[test]
+fn test_push_frame_inline_pattern_excludes_other_keys() {
+    let yaml = indoc! {"
+    patterns:
+      WinMgmt: \"Super_L d => noop ( j => emit(test.j) | c => emit(test.c) | d! => push_frame(c => [emit(test.kill), end]) | any => noop )* end_on(Super_L!) => noop\"
+    signals:
+      test.j:
+        actions: []
+      test.c:
+        actions: []
+      test.kill:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer,
+        signal_timer,
+        "default",
+        Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher,
+        config.fused_nfa.clone(),
+        None,
+        None,
+    );
+
+    // Enter modal: Super_L then D (commit fires)
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+
+    // D release: push_frame(c => [emit(test.kill), end]) fires — frame 2 has only `c`
+    h.on_events(&vec![kr(Key::KEY_D)], &config).unwrap();
+
+    // J press in frame 2: NOT in sub-NFA, so it falls through (frame fails, resets, j forwarded)
+    let j_actions = h.on_events(&vec![kp(Key::KEY_J)], &config).unwrap();
+    let j_forwarded = j_actions.iter().any(|a| matches!(a, Action::KeyEvent(k) if k.key == Key::KEY_J && k.value() == 1));
+    assert!(j_forwarded, "J must NOT be consumed by frame 2 (only c is in the sub-NFA); actions={j_actions:?}");
+
+    let _ = fs::remove_file(path);
+}
+
+// ── State-broadcast tests ─────────────────────────────────────────────────────
+
+/// Idle before any pattern activity.
+#[test]
+fn test_state_broadcast_idle_initially() {
+    let yaml = indoc! {"
+    patterns:
+      Nav: \"Super_L g => emit(nav.go)\"
+    signals:
+      nav.go:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer, signal_timer, "default", Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher, config.fused_nfa.clone(), None, None,
+    );
+
+    // No events yet: nothing broadcast
+    assert!(h.last_broadcast_state.is_none(), "no broadcast before any event");
+
+    // A non-pattern key causes a reset which broadcasts Idle
+    h.on_events(&vec![kp(Key::KEY_X)], &config).unwrap();
+    assert_eq!(h.last_broadcast_state, Some(crate::state_broadcaster::StateEvent::Idle),
+        "non-pattern key should broadcast Idle; got {:?}", h.last_broadcast_state);
+
+    let _ = fs::remove_file(path);
+}
+
+/// After committing to a pattern, state becomes Active with the right fields.
+#[test]
+fn test_state_broadcast_active_after_commit() {
+    use crate::state_broadcaster::StateEvent;
+    let yaml = indoc! {"
+    patterns:
+      Nav: \"Super_L g => emit(nav.go)\"
+    signals:
+      nav.go:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer, signal_timer, "default", Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher, config.fused_nfa.clone(), None, None,
+    );
+
+    // Super_L: recognition phase (modifier), no commit yet
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    // G: commit fires (emit action), pattern name "Nav" identified
+    h.on_events(&vec![kp(Key::KEY_G)], &config).unwrap();
+
+    match &h.last_broadcast_state {
+        Some(StateEvent::Active { pattern, frame, anchor_keys, .. }) => {
+            assert_eq!(pattern.as_deref(), Some("Nav"), "pattern name should be Nav");
+            assert_eq!(*frame, 1, "frame depth after commit");
+            assert!(anchor_keys.contains(&"KEY_LEFTMETA".to_string()),
+                "Super_L should be in anchor_keys; got {anchor_keys:?}");
+        }
+        other => panic!("expected Active state, got {other:?}"),
+    }
+
+    let _ = fs::remove_file(path);
+}
+
+/// After the pattern fully completes (end_on fires), state returns to Idle.
+#[test]
+fn test_state_broadcast_idle_after_reset() {
+    use crate::state_broadcaster::StateEvent;
+    let yaml = indoc! {"
+    patterns:
+      WinMgmt: \"Super_L d => noop ( j => emit(wm.j) | any => noop )* end_on(Super_L!) => noop\"
+    signals:
+      wm.j:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer, signal_timer, "default", Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher, config.fused_nfa.clone(), None, None,
+    );
+
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+
+    // Verify active
+    assert!(matches!(h.last_broadcast_state, Some(StateEvent::Active { .. })),
+        "should be Active after Super+D commit");
+
+    // Super release triggers end_on → full reset
+    h.on_events(&vec![kr(Key::KEY_LEFTMETA)], &config).unwrap();
+    assert_eq!(h.last_broadcast_state, Some(StateEvent::Idle),
+        "should be Idle after end_on fires; got {:?}", h.last_broadcast_state);
+
+    let _ = fs::remove_file(path);
+}
+
+/// After push_frame switches to sub-NFA, `available` only shows the sub-NFA edges.
+#[test]
+fn test_state_broadcast_available_in_subframe() {
+    use crate::state_broadcaster::StateEvent;
+    let yaml = indoc! {"
+    patterns:
+      WinMgmt: \"Super_L d => noop ( j => emit(wm.j) | c => emit(wm.c) | d! => push_frame(c => [emit(wm.kill), end]) | any => noop )* end_on(Super_L!) => noop\"
+    signals:
+      wm.j:
+        actions: []
+      wm.c:
+        actions: []
+      wm.kill:
+        actions: []
+    "};
+    let path = write_temp_config(yaml);
+    let config = crate::config::load_configs(&[path.clone()]).expect("config load");
+    let dispatcher = make_signal_dispatcher(&config);
+    let signal_timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let timer = TimerFd::new(ClockId::CLOCK_MONOTONIC, TimerFlags::empty()).unwrap();
+    let mut h = EventHandler::new(
+        timer, signal_timer, "default", Duration::from_micros(0),
+        WMClient::new("static", Box::new(StaticClient { current_application: None })),
+        dispatcher, config.fused_nfa.clone(), None, None,
+    );
+
+    h.on_events(&vec![kp(Key::KEY_LEFTMETA)], &config).unwrap();
+    h.on_events(&vec![kp(Key::KEY_D)], &config).unwrap();
+
+    // In main loop: available should include j, c, d!, any
+    match &h.last_broadcast_state {
+        Some(StateEvent::Active { available, .. }) => {
+            assert!(available.contains(&"KEY_J".to_string()),
+                "main loop should have KEY_J available; got {available:?}");
+            assert!(available.contains(&"KEY_C".to_string()),
+                "main loop should have KEY_C available; got {available:?}");
+        }
+        other => panic!("expected Active, got {other:?}"),
+    }
+
+    // D release: push_frame fires → sub-NFA activated with only c
+    h.on_events(&vec![kr(Key::KEY_D)], &config).unwrap();
+    match &h.last_broadcast_state {
+        Some(StateEvent::Active { available, held_keys, .. }) => {
+            assert!(available.contains(&"KEY_C".to_string()),
+                "sub-NFA should have KEY_C available; got {available:?}");
+            assert!(!available.contains(&"KEY_J".to_string()),
+                "sub-NFA must NOT have KEY_J; got {available:?}");
+            assert!(held_keys.contains(&"KEY_LEFTMETA".to_string()),
+                "Super_L should still be in held_keys; got {held_keys:?}");
+        }
+        other => panic!("expected Active after D release, got {other:?}"),
+    }
+
+    let _ = fs::remove_file(path);
+}
+
+fn write_temp_config(yaml: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "xremap-pattern-test-{}.yml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(&path, yaml).expect("write temp config");
+    path
 }

@@ -13,6 +13,8 @@ pub enum Event<'a> {
     OtherEvents(InputEvent),
     // Timer for nested override reached its timeout
     OverrideTimeout,
+    // Timer for signal repeats reached its timeout
+    SignalTimeout,
 }
 
 #[derive(Debug)]

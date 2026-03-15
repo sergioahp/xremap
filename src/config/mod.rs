@@ -6,6 +6,9 @@ pub mod keymap;
 pub mod keymap_action;
 mod modmap;
 pub mod modmap_action;
+pub mod signal;
+pub use key::{parse_key, DISGUISED_EVENT_OFFSETTER, KEY_MATCH_ANY};
+pub mod socket;
 
 pub mod remap;
 #[cfg(test)]
@@ -14,6 +17,8 @@ mod tests;
 extern crate serde_yaml;
 extern crate toml;
 
+use crate::pattern::build_fused_nfa;
+use crate::pattern::nfa::Nfa;
 use evdev::KeyCode as Key;
 use keymap::Keymap;
 use modmap::Modmap;
@@ -26,10 +31,7 @@ use std::{
     time::SystemTime,
 };
 
-use self::{
-    key::parse_key,
-    keymap::{build_keymap_table, KeymapEntry},
-};
+use self::{keymap::{build_keymap_table, KeymapEntry}, keymap_action::KeymapAction, signal::parse_signal_bindings};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,6 +41,14 @@ pub struct Config {
     pub modmap: Vec<Modmap>,
     #[serde(default = "Vec::new")]
     pub keymap: Vec<Keymap>,
+    #[serde(default = "HashMap::new")]
+    pub signals: HashMap<String, signal::SignalBindingConfig>,
+    #[serde(default = "HashMap::new")]
+    pub patterns: HashMap<String, String>,
+    #[serde(default)]
+    pub socket_path: Option<String>,
+    #[serde(default)]
+    pub state_socket: Option<String>,
     #[serde(default = "default_mode")]
     pub default_mode: String,
     #[serde(deserialize_with = "deserialize_virtual_modifiers", default = "Vec::new")]
@@ -59,6 +69,12 @@ pub struct Config {
     pub keymap_table: HashMap<Key, Vec<KeymapEntry>>,
     #[serde(default = "const_true")]
     pub enable_wheel: bool,
+    #[serde(skip)]
+    pub signal_bindings: HashMap<String, (Vec<KeymapAction>, Option<std::time::Duration>)>,
+    #[serde(skip)]
+    pub fused_nfa: Option<Nfa>,
+    #[serde(skip)]
+    pub socket_path_runtime: Option<String>,
 }
 
 enum ConfigFiletype {
@@ -98,6 +114,11 @@ pub fn load_configs(filenames: &[PathBuf]) -> Result<Config, Box<dyn error::Erro
         config.modmap.extend(c.modmap);
         config.keymap.extend(c.keymap);
         config.virtual_modifiers.extend(c.virtual_modifiers);
+        config.signals.extend(c.signals);
+    config.patterns.extend(c.patterns);
+    if config.socket_path.is_none() {
+        config.socket_path = c.socket_path;
+    }
     }
 
     // Timestamp for --watch=config
@@ -105,6 +126,13 @@ pub fn load_configs(filenames: &[PathBuf]) -> Result<Config, Box<dyn error::Erro
 
     // Convert keymap for efficient keymap lookup
     config.keymap_table = build_keymap_table(&config.keymap);
+    // Prepare signal bindings (runtime form)
+    config.signal_bindings = parse_signal_bindings(config.signals.clone());
+    config.socket_path_runtime = config.socket_path.clone();
+    // Compile all patterns into a single fused NFA.
+    if !config.patterns.is_empty() {
+        config.fused_nfa = Some(build_fused_nfa(&config.patterns)?);
+    }
 
     Ok(config)
 }

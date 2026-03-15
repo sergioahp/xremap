@@ -18,6 +18,8 @@ pub enum Action {
     InputEvent(InputEvent),
     // Run a command
     Command(Vec<String>),
+    // Send raw message to socket path
+    SocketSend(String),
     // keypress_delay_ms
     Delay(Duration),
 }

@@ -1,0 +1,101 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync_master:
+    runs-on: ubuntu-latest
+    name: Sync master with upstream
+    outputs:
+      has_new_commits: ${{ steps.sync.outputs.has_new_commits }}
+
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Sync upstream changes into master
+        id: sync
+        uses: sergioahp/Fork-Sync-With-Upstream-action@v3.4.1
+        with:
+          target_sync_branch: master
+          target_repo_token: ${{ secrets.SYNC_TOKEN }}
+          upstream_sync_repo: xremap/xremap
+          upstream_sync_branch: master
+
+  merge_into_feature:
+    runs-on: ubuntu-latest
+    name: Merge master into feature branch
+    needs: sync_master
+    if: needs.sync_master.outputs.has_new_commits == 'true'
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/state-machine-dsl
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch updated master
+        run: git fetch origin master
+
+      - name: Merge master into feature branch
+        id: merge
+        run: "git merge origin/master --no-edit -m 'chore: merge upstream sync into feature branch'"
+        continue-on-error: true
+
+      - name: Push if merge succeeded
+        if: steps.merge.outcome == 'success'
+        run: git push origin feature/state-machine-dsl
+
+      - name: Open issue if merge has conflicts
+        if: steps.merge.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Upstream sync: merge conflict on feature branch needs manual resolution';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'upstream-sync',
+            });
+            if (issues.some(i => i.title === title)) {
+              console.log('Issue already open, skipping.');
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: [
+                '## Upstream sync: merge conflict',
+                '',
+                '`master` was synced with upstream successfully, but merging it into',
+                '`feature/state-machine-dsl` produced conflicts.',
+                '',
+                '**Run locally to resolve:**',
+                '```sh',
+                'git fetch origin',
+                'git checkout feature/state-machine-dsl',
+                'git merge origin/master',
+                '# resolve conflicts, then:',
+                'git push origin feature/state-machine-dsl',
+                '```',
+                '',
+                `Triggered by workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ].join('\n'),
+              labels: ['upstream-sync'],
+            });

@@ -1,8 +1,10 @@
-use crate::event_handler::{DISGUISED_EVENT_OFFSETTER, KEY_MATCH_ANY};
 use evdev::KeyCode as Key;
 use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::str::FromStr;
+
+pub const DISGUISED_EVENT_OFFSETTER: u16 = 59974;
+pub const KEY_MATCH_ANY: Key = Key(DISGUISED_EVENT_OFFSETTER + 26);
 
 pub fn deserialize_key<'de, D>(deserializer: D) -> Result<Key, D::Error>
 where

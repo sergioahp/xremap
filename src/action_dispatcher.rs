@@ -49,6 +49,9 @@ impl ActionDispatcher {
 
             Action::InputEvent(event) => self.send_event(event)?,
             Action::Command(command) => self.run_command(command),
+            Action::SocketSend(_) => {
+                // Socket sends are handled in EventHandler (they need socket path), shouldn't reach here.
+            }
             Action::Delay(duration) => thread::sleep(duration),
         }
         Ok(())

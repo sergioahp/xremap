@@ -1,14 +1,20 @@
 use crate::action::Action;
 use crate::client::WMClient;
 use crate::config::application::OnlyOrNot;
+use crate::config::{DISGUISED_EVENT_OFFSETTER, KEY_MATCH_ANY};
 use crate::config::key_press::{KeyPress, Modifier};
 use crate::config::keymap::{build_override_table, OverrideEntry};
 use crate::config::keymap_action::KeymapAction;
 use crate::config::modmap_action::{Keys, ModmapAction, MultiPurposeKey, PressReleaseKey};
 use crate::config::remap::Remap;
+use crate::pattern::ast::{ActionSpec, Edge};
 use crate::device::InputDeviceInfo;
 use crate::event::{Event, KeyEvent, RelativeEvent};
-use crate::{config, Config};
+use crate::signal::{Signal, SignalBinding, SignalDispatcher};
+use crate::socket_worker::WorkerHandle;
+use crate::state_broadcaster::{StateBroadcaster, StateEvent};
+use crate::config::{self, Config};
+use std::sync::Arc;
 use evdev::KeyCode as Key;
 use lazy_static::lazy_static;
 use log::debug;
@@ -18,16 +24,6 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::time::{Duration, Instant};
-
-// This const is a value used to offset RELATIVE events' scancodes
-// so that they correspond to the custom aliases created in config::key::parse_key.
-// This offset also prevents resulting scancodes from corresponding to non-Xremap scancodes,
-// to prevent conflating disguised relative events with other events.
-pub const DISGUISED_EVENT_OFFSETTER: u16 = 59974;
-
-// This const is defined a keycode for a configuration key used to match any key.
-// It's the offset of XHIRES_LEFTSCROLL + 1
-pub const KEY_MATCH_ANY: Key = Key(DISGUISED_EVENT_OFFSETTER + 26);
 
 pub struct EventHandler {
     // Currently pressed modifier keys
@@ -48,6 +44,8 @@ pub struct EventHandler {
     override_timeout_key: Option<Vec<Key>>,
     // Trigger a timeout of nested remaps through select(2)
     override_timer: TimerFd,
+    // Timer for signal repeats
+    signal_timer: TimerFd,
     // { set_mode: String }
     mode: String,
     // { set_mark: true }
@@ -58,6 +56,26 @@ pub struct EventHandler {
     keypress_delay: Duration,
     // Buffered actions to be dispatched. TODO: Just return actions from each function instead of using this.
     actions: Vec<Action>,
+    // State machine patterns
+    signal_dispatcher: crate::signal::SignalDispatcher,
+    pattern_machine: Option<crate::pattern::Machine>,
+    next_signal_due: Option<Instant>,
+    worker_handle: Option<WorkerHandle>,
+    // Keys whose press was consumed by the pattern; their repeat events are suppressed.
+    pattern_suppressed_keys: HashSet<Key>,
+    // All currently held keys (for anchor key validation after partial reset)
+    pattern_held_keys: HashSet<Key>,
+    // Non-modifier events consumed during recognition phase, pending replay on failure
+    pattern_speculative_buffer: Vec<(Key, i32)>,
+    // Frame stack: each entry is (nfa_states_at_push, anchor_keys_at_push).
+    // Non-empty means committed. Pushed at commit point and on explicit PushFrame actions.
+    // On failure, walk from top and restore nearest valid frame (anchor ⊆ held_keys).
+    // Cleared entirely on ended=true (end_on / explicit exit).
+    pattern_frame_stack: Vec<(HashSet<usize>, HashSet<Key>)>,
+    // State broadcasting
+    state_broadcaster: Option<Arc<StateBroadcaster>>,
+    /// Last event sent to the broadcaster — used to deduplicate and for test inspection.
+    pub last_broadcast_state: Option<StateEvent>,
 }
 
 struct TaggedAction {
@@ -66,7 +84,17 @@ struct TaggedAction {
 }
 
 impl EventHandler {
-    pub fn new(timer: TimerFd, mode: &str, keypress_delay: Duration, application_client: WMClient) -> EventHandler {
+    pub fn new(
+        timer: TimerFd,
+        signal_timer: TimerFd,
+        mode: &str,
+        keypress_delay: Duration,
+        application_client: WMClient,
+        signal_dispatcher: SignalDispatcher,
+        fused_nfa: Option<crate::pattern::nfa::Nfa>,
+        worker_handle: Option<WorkerHandle>,
+        state_broadcaster: Option<Arc<StateBroadcaster>>,
+    ) -> EventHandler {
         EventHandler {
             modifiers: HashSet::new(),
             extra_modifiers: HashSet::new(),
@@ -78,12 +106,35 @@ impl EventHandler {
             override_remaps: vec![],
             override_timeout_key: None,
             override_timer: timer,
+            signal_timer,
             mode: mode.to_string(),
             mark_set: false,
             escape_next_key: false,
             keypress_delay,
             actions: vec![],
+            signal_dispatcher,
+            pattern_machine: fused_nfa.map(crate::pattern::Machine::new),
+            next_signal_due: None,
+            worker_handle,
+            pattern_suppressed_keys: HashSet::new(),
+            pattern_held_keys: HashSet::new(),
+            pattern_speculative_buffer: vec![],
+            pattern_frame_stack: vec![],
+            state_broadcaster,
+            last_broadcast_state: None,
         }
+    }
+
+    pub fn reload_from_config(&mut self, config: &Config) -> Result<(), Box<dyn Error>> {
+        self.signal_dispatcher = make_signal_dispatcher(config);
+        self.pattern_machine = config.fused_nfa.as_ref().map(|nfa| crate::pattern::Machine::new(nfa.clone()));
+        self.pattern_frame_stack.clear();
+        self.pattern_speculative_buffer.clear();
+        self.pattern_suppressed_keys.clear();
+        self.signal_dispatcher.stop_all();
+        self.schedule_signal_timer(None, Instant::now())?;
+        // worker_handle is process-lifetime; not reloaded on config change.
+        Ok(())
     }
 
     // Handle an Event and return Actions. This should be the only public method of EventHandler.
@@ -101,6 +152,7 @@ impl EventHandler {
 
                 Event::OtherEvents(event) => self.send_action(Action::InputEvent(*event)),
                 Event::OverrideTimeout => self.timeout_override()?,
+                Event::SignalTimeout => self.timeout_signals()?,
             };
         }
         // if there is at least one mouse movement event, sending all of them as one MouseMovementEventCollection
@@ -139,6 +191,45 @@ impl EventHandler {
         let mut send_original_relative_event = false;
         // Apply keymap
         for (key, value) in key_values.into_iter() {
+            // Track held keys for pattern anchor validation (before pattern processing)
+            if value == RELEASE {
+                self.pattern_held_keys.remove(&key);
+            } else if value == PRESS {
+                self.pattern_held_keys.insert(key);
+            }
+            if value == REPEAT {
+                // Suppress repeats for keys whose press was consumed by the pattern.
+                if self.pattern_suppressed_keys.contains(&key) {
+                    continue;
+                }
+            } else {
+                let edge = if value == RELEASE {
+                    Edge::Release(key)
+                } else {
+                    Edge::Press(key)
+                };
+                if self.process_patterns(&edge)? {
+                    // Modifier keys must still update internal state and be forwarded to the
+                    // virtual device even when a pattern consumes them. Forwarding is needed so
+                    // the compositor (Hyprland) sees Super held and can handle Super+click for
+                    // window move/resize.
+                    if config.virtual_modifiers.contains(&key) || MODIFIER_KEYS.contains(&key) {
+                        self.update_modifier(key, value);
+                        self.send_key(&key, value);
+                    } else if value == PRESS {
+                        self.pattern_suppressed_keys.insert(key);
+                    } else {
+                        // RELEASE: key is done, no longer suppressed
+                        self.pattern_suppressed_keys.remove(&key);
+                    }
+                    continue;
+                } else {
+                    // Not consumed: ensure it's not in the suppressed set
+                    // (handles the case where a key was consumed on press but falls through on release after reset)
+                    self.pattern_suppressed_keys.remove(&key);
+                }
+            }
+
             if config.virtual_modifiers.contains(&key) {
                 self.update_modifier(key, value);
                 continue;
@@ -263,6 +354,14 @@ impl EventHandler {
         self.remove_override()
     }
 
+    fn timeout_signals(&mut self) -> Result<(), Box<dyn Error>> {
+        let now = Instant::now();
+        let (actions, next) = self.signal_dispatcher.tick(now);
+        self.dispatch_signal_actions(actions)?;
+        self.schedule_signal_timer(next, now)?;
+        Ok(())
+    }
+
     fn remove_override(&mut self) -> Result<(), Box<dyn Error>> {
         self.override_timer.unset()?;
         self.override_remaps.clear();
@@ -284,6 +383,30 @@ impl EventHandler {
 
     fn send_action(&mut self, action: Action) {
         self.actions.push(action);
+    }
+
+    fn dispatch_signal_actions(&mut self, actions: Vec<KeymapAction>) -> Result<(), Box<dyn Error>> {
+        for action in actions {
+            let tagged = TaggedAction {
+                action,
+                exact_match: false,
+            };
+            self.dispatch_action(&tagged, &KEY_MATCH_ANY)?;
+        }
+        Ok(())
+    }
+
+    fn schedule_signal_timer(&mut self, next: Option<Duration>, now: Instant) -> Result<(), Box<dyn Error>> {
+        if let Some(duration) = next {
+            let expiration = Expiration::OneShot(TimeSpec::from_duration(duration));
+            self.signal_timer.unset()?;
+            self.signal_timer.set(expiration, TimerSetTimeFlags::empty())?;
+            self.next_signal_due = Some(now + duration);
+        } else {
+            self.signal_timer.unset()?;
+            self.next_signal_due = None;
+        }
+        Ok(())
     }
 
     // Repeat/Release what's originally pressed even if remapping changes while holding it
@@ -596,6 +719,12 @@ impl EventHandler {
                     self.extra_modifiers.insert(*key);
                 }
             }
+            KeymapAction::SocketSend(payload) => {
+                if let Some(handle) = &self.worker_handle {
+                    debug!("socket_send: {}", payload);
+                    handle.send_json(payload);
+                }
+            }
         }
         Ok(())
     }
@@ -739,6 +868,290 @@ impl EventHandler {
             self.modifiers.remove(&key);
         }
     }
+
+    fn process_patterns(&mut self, edge: &Edge) -> Result<bool, Box<dyn Error>> {
+        if self.pattern_machine.is_none() {
+            return Ok(false);
+        }
+
+        let res = self.pattern_machine.as_mut().unwrap().step(edge);
+        let mut consumed = res.consumed;
+        let committed = !self.pattern_frame_stack.is_empty();
+        // For PushFrame: frame holds current states (restore point = current loop states).
+        // For PushFrameAt: frame also holds current states as restore point, but machine will
+        // be switched to the sub-NFA states so that only sub-NFA transitions fire next.
+        // sub_nfa_targets collects the epsilon-closures of inline sub-NFA starts.
+        let mut push_frame_states: Vec<HashSet<usize>> = Vec::new();
+        let mut sub_nfa_targets: Vec<HashSet<usize>> = Vec::new();
+        for a in res.actions.iter() {
+            match a {
+                ActionSpec::PushFrame => {
+                    // Push current machine states (existing behavior)
+                    push_frame_states.push(self.pattern_machine.as_ref().unwrap().current.clone());
+                }
+                ActionSpec::PushFrameAt(state) => {
+                    // Only switch machine to sub-NFA states — do NOT push a restore frame.
+                    // The commit-point frame (anchor={Super,D}) already on the stack handles
+                    // restoration; after D is released its anchor is invalid, so failure in
+                    // the sub-NFA triggers a full reset instead of falling back to the loop.
+                    sub_nfa_targets.push(self.pattern_machine.as_ref().unwrap().nfa.epsilon_closure(*state));
+                }
+                _ => {}
+            }
+        }
+        let (mut signals, ended) = signals_from_actions(res.actions.clone());
+        let has_actions = res.actions.iter().any(|a| !matches!(a, ActionSpec::PushFrame | ActionSpec::PushFrameOf(_) | ActionSpec::PushFrameAt(_)));
+        let needs_reset = !res.alive || ended;
+
+        // Commit point: first actions fire in recognition phase → push initial frame
+        if consumed && has_actions && !committed {
+            self.pattern_speculative_buffer.clear();
+            if res.alive && !ended {
+                self.pattern_frame_stack.push((
+                    self.pattern_machine.as_ref().unwrap().current.clone(),
+                    self.pattern_held_keys.clone(),
+                ));
+            }
+        } else if consumed && !committed {
+            // Recognition phase: buffer non-modifier events for potential replay on failure
+            let is_modifier = match edge {
+                Edge::Press(k) | Edge::Release(k) => MODIFIER_KEYS.contains(k),
+                Edge::Any => false,
+            };
+            if !is_modifier {
+                let value = if matches!(edge, Edge::Press(_)) { PRESS } else { RELEASE };
+                if let Edge::Press(k) | Edge::Release(k) = edge {
+                    self.pattern_speculative_buffer.push((*k, value));
+                }
+            }
+        }
+
+        // Explicit push_frame actions in active phase
+        if committed && (!push_frame_states.is_empty() || !sub_nfa_targets.is_empty()) && res.alive && !ended {
+            for frame_states in push_frame_states {
+                self.pattern_frame_stack.push((frame_states, self.pattern_held_keys.clone()));
+            }
+            // For inline sub-NFA frames: switch machine.current to sub-NFA states so that
+            // only transitions defined in the sub-NFA fire until the sub-NFA completes or fails.
+            if let Some(sub_states) = sub_nfa_targets.into_iter().last() {
+                self.pattern_machine.as_mut().unwrap().current = sub_states;
+            }
+        }
+
+        if needs_reset {
+            if !ended {
+                // Walk stack from top: find nearest valid frame (all anchor keys still held)
+                loop {
+                    match self.pattern_frame_stack.last() {
+                        Some((frame_states, anchor_keys))
+                            if anchor_keys.iter().all(|k| self.pattern_held_keys.contains(k)) =>
+                        {
+                            let states = frame_states.clone();
+                            self.pattern_machine.as_mut().unwrap().current = states;
+                            return self.dispatch_pattern_signals_and_return(signals, consumed);
+                        }
+                        Some(_) => {
+                            self.pattern_frame_stack.pop();
+                        }
+                        None => break,
+                    }
+                }
+            }
+
+            // Full reset: no valid frame found (or ended=true)
+            if self.pattern_frame_stack.is_empty() {
+                // Was in recognition phase: replay buffered events
+                let buffer = std::mem::take(&mut self.pattern_speculative_buffer);
+                for (key, value) in buffer {
+                    self.send_key(&key, value);
+                }
+            }
+            self.pattern_frame_stack.clear();
+            self.pattern_speculative_buffer.clear();
+
+            // Reset + re-arm with held modifiers.
+            // Use pattern_held_keys (updated before process_patterns is called) rather than
+            // self.modifiers, which may still contain the just-released key at this point
+            // because update_modifier() runs after process_patterns returns.
+            let m = self.pattern_machine.as_mut().unwrap();
+            m.reset();
+            let held_mods: Vec<Key> = MODIFIER_KEYS.iter()
+                .filter(|k| self.pattern_held_keys.contains(k))
+                .copied()
+                .collect();
+            for key in held_mods {
+                let saved = m.current.clone();
+                let r = m.step(&Edge::Press(key));
+                if !r.alive {
+                    m.current = saved;
+                }
+            }
+
+            // Retry the triggering edge on the re-armed machine (handles second-session patterns)
+            if !ended {
+                let m = self.pattern_machine.as_mut().unwrap();
+                let saved = m.current.clone();
+                let retry = m.step(edge);
+                if retry.alive {
+                    let retry_has_actions = retry.actions.iter().any(|a| !matches!(a, ActionSpec::PushFrame | ActionSpec::PushFrameOf(_) | ActionSpec::PushFrameAt(_)));
+                    let mut retry_push_frame_states: Vec<HashSet<usize>> = Vec::new();
+                    let mut retry_sub_nfa_targets: Vec<HashSet<usize>> = Vec::new();
+                    for a in retry.actions.iter() {
+                        match a {
+                            ActionSpec::PushFrame => {
+                                retry_push_frame_states.push(self.pattern_machine.as_ref().unwrap().current.clone());
+                            }
+                            ActionSpec::PushFrameAt(state) => {
+                                retry_sub_nfa_targets.push(self.pattern_machine.as_ref().unwrap().nfa.epsilon_closure(*state));
+                            }
+                            _ => {}
+                        }
+                    }
+                    let (retry_signals, _) = signals_from_actions(retry.actions);
+                    signals.extend(retry_signals);
+                    consumed = true;
+                    if retry_has_actions {
+                        self.pattern_frame_stack.push((
+                            self.pattern_machine.as_ref().unwrap().current.clone(),
+                            self.pattern_held_keys.clone(),
+                        ));
+                        for frame_states in retry_push_frame_states {
+                            self.pattern_frame_stack.push((frame_states, self.pattern_held_keys.clone()));
+                        }
+                        if let Some(sub_states) = retry_sub_nfa_targets.into_iter().last() {
+                            self.pattern_machine.as_mut().unwrap().current = sub_states;
+                        }
+                    } else {
+                        // Retry consumed in recognition phase — buffer it
+                        let is_modifier = match edge {
+                            Edge::Press(k) | Edge::Release(k) => MODIFIER_KEYS.contains(k),
+                            Edge::Any => false,
+                        };
+                        if !is_modifier {
+                            let val = if matches!(edge, Edge::Press(_)) { PRESS } else { RELEASE };
+                            if let Edge::Press(k) | Edge::Release(k) = edge {
+                                self.pattern_speculative_buffer.push((*k, val));
+                            }
+                        }
+                    }
+                } else {
+                    m.current = saved;
+                }
+            }
+        }
+
+        self.broadcast_state();
+        self.dispatch_pattern_signals_and_return(signals, consumed)
+    }
+
+    /// Compute and broadcast the current pattern state if it changed.
+    fn broadcast_state(&mut self) {
+        let event = self.current_state_event();
+        if self.last_broadcast_state.as_ref() == Some(&event) {
+            return;
+        }
+        self.last_broadcast_state = Some(event.clone());
+        if let Some(b) = self.state_broadcaster.clone() {
+            b.broadcast(&event);
+        }
+    }
+
+    fn current_state_event(&self) -> StateEvent {
+        let frame = self.pattern_frame_stack.len();
+        if frame == 0 {
+            return StateEvent::Idle;
+        }
+
+        // Identify the active pattern by checking which pattern's state range
+        // intersects with the machine's current active states.
+        let pattern = self.pattern_machine.as_ref().and_then(|m| {
+            m.nfa.pattern_ranges.iter().find(|(_, &(start, end))| {
+                m.current.iter().any(|&s| s >= start && s < end)
+            }).map(|(name, _)| name.clone())
+        });
+
+        // Anchor keys from the top (most recent) frame.
+        let anchor_keys = {
+            let mut keys: Vec<String> = self.pattern_frame_stack
+                .last().unwrap().1
+                .iter()
+                .map(|k| format!("{k:?}"))
+                .collect();
+            keys.sort();
+            keys
+        };
+
+        // Keys currently held (as tracked by the pattern machine).
+        let held_keys = {
+            let mut keys: Vec<String> = self.pattern_held_keys
+                .iter()
+                .map(|k| format!("{k:?}"))
+                .collect();
+            keys.sort();
+            keys
+        };
+
+        // Edges the NFA currently accepts.
+        let available = self.pattern_machine.as_ref().map(|m| {
+            let mut edges: HashSet<String> = HashSet::new();
+            for &state in &m.current {
+                for t in &m.nfa.states[state].transitions {
+                    if let Some(edge) = &t.edge {
+                        edges.insert(format_edge(edge));
+                    }
+                }
+            }
+            let mut v: Vec<String> = edges.into_iter().collect();
+            v.sort();
+            v
+        }).unwrap_or_default();
+
+        StateEvent::Active { pattern, frame, anchor_keys, held_keys, available }
+    }
+
+    fn dispatch_pattern_signals_and_return(
+        &mut self,
+        signals: Vec<Signal>,
+        consumed: bool,
+    ) -> Result<bool, Box<dyn Error>> {
+        if !signals.is_empty() || self.signal_dispatcher.has_repeats() {
+            let now = Instant::now();
+            let actions = self.signal_dispatcher.handle_signals(signals, now);
+            self.dispatch_signal_actions(actions)?;
+            let next_due = self.signal_dispatcher.next_due();
+            let delay = next_due.map(|due| due.saturating_duration_since(now));
+            self.schedule_signal_timer(delay, now)?;
+        }
+        Ok(consumed)
+    }
+
+}
+
+pub(crate) fn make_signal_dispatcher(config: &Config) -> SignalDispatcher {
+    let mut map = std::collections::HashMap::new();
+    for (name, (actions, repeat)) in &config.signal_bindings {
+        map.insert(
+            name.clone(),
+            SignalBinding {
+                actions: actions.clone(),
+                repeat: *repeat,
+            },
+        );
+    }
+    SignalDispatcher::new(map)
+}
+
+fn signals_from_actions(specs: Vec<ActionSpec>) -> (Vec<Signal>, bool) {
+    let mut signals = vec![];
+    let mut ended = false;
+    for spec in specs {
+        match spec {
+            ActionSpec::Emit(name, kind) => signals.push(Signal { name, kind }),
+            ActionSpec::Noop | ActionSpec::PushFrame | ActionSpec::PushFrameOf(_) | ActionSpec::PushFrameAt(_) => {}
+            ActionSpec::End => { ended = true; }
+        }
+    }
+    (signals, ended)
 }
 
 fn is_remap(actions: &[KeymapAction]) -> bool {
@@ -808,6 +1221,14 @@ lazy_static! {
         Key::KEY_LEFTMETA,
         Key::KEY_RIGHTMETA,
     ];
+}
+
+fn format_edge(edge: &Edge) -> String {
+    match edge {
+        Edge::Press(k) => format!("{k:?}"),
+        Edge::Release(k) => format!("{k:?}!"),
+        Edge::Any => "any".to_string(),
+    }
 }
 
 // ---

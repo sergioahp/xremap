@@ -37,6 +37,8 @@ pub enum KeymapAction {
     EscapeNextKey(bool),
     #[serde(deserialize_with = "deserialize_sleep")]
     Sleep(u64),
+    #[serde(deserialize_with = "deserialize_socket_send")]
+    SocketSend(String),
 
     // Internals
     #[serde(skip)]
@@ -181,6 +183,19 @@ where
         }
     }
     Err(de::Error::custom("not a map with a single \"sleep\" key"))
+}
+
+fn deserialize_socket_send<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut action = HashMap::<String, String>::deserialize(deserializer)?;
+    if let Some(set) = action.remove("socket_send") {
+        if action.is_empty() {
+            return Ok(set);
+        }
+    }
+    Err(de::Error::custom("not a map with a single \"socket_send\" key"))
 }
 
 // Used only for deserializing Vec<Action>
