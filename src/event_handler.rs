@@ -61,6 +61,8 @@ pub struct EventHandler {
     pattern_machine: Option<crate::pattern::Machine>,
     next_signal_due: Option<Instant>,
     worker_handle: Option<WorkerHandle>,
+    // Keys whose press was consumed by the pattern; their repeat events are suppressed.
+    pattern_suppressed_keys: HashSet<Key>,
     // All currently held keys (for anchor key validation after partial reset)
     pattern_held_keys: HashSet<Key>,
     // Non-modifier events consumed during recognition phase, pending replay on failure
@@ -114,6 +116,7 @@ impl EventHandler {
             pattern_machine: fused_nfa.map(crate::pattern::Machine::new),
             next_signal_due: None,
             worker_handle,
+            pattern_suppressed_keys: HashSet::new(),
             pattern_held_keys: HashSet::new(),
             pattern_speculative_buffer: vec![],
             pattern_frame_stack: vec![],
@@ -127,6 +130,7 @@ impl EventHandler {
         self.pattern_machine = config.fused_nfa.as_ref().map(|nfa| crate::pattern::Machine::new(nfa.clone()));
         self.pattern_frame_stack.clear();
         self.pattern_speculative_buffer.clear();
+        self.pattern_suppressed_keys.clear();
         self.signal_dispatcher.stop_all();
         self.schedule_signal_timer(None, Instant::now())?;
         // worker_handle is process-lifetime; not reloaded on config change.
@@ -193,7 +197,12 @@ impl EventHandler {
             } else if value == PRESS {
                 self.pattern_held_keys.insert(key);
             }
-            if value != REPEAT {
+            if value == REPEAT {
+                // Suppress repeats for keys whose press was consumed by the pattern.
+                if self.pattern_suppressed_keys.contains(&key) {
+                    continue;
+                }
+            } else {
                 let edge = if value == RELEASE {
                     Edge::Release(key)
                 } else {
@@ -207,8 +216,17 @@ impl EventHandler {
                     if config.virtual_modifiers.contains(&key) || MODIFIER_KEYS.contains(&key) {
                         self.update_modifier(key, value);
                         self.send_key(&key, value);
+                    } else if value == PRESS {
+                        self.pattern_suppressed_keys.insert(key);
+                    } else {
+                        // RELEASE: key is done, no longer suppressed
+                        self.pattern_suppressed_keys.remove(&key);
                     }
                     continue;
+                } else {
+                    // Not consumed: ensure it's not in the suppressed set
+                    // (handles the case where a key was consumed on press but falls through on release after reset)
+                    self.pattern_suppressed_keys.remove(&key);
                 }
             }
 
