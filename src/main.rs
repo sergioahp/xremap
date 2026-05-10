@@ -36,6 +36,7 @@ mod device;
 mod emit_handler;
 mod event;
 mod event_handler;
+mod hyprland_lock;
 mod main_controller;
 mod operator_double_tap;
 mod operator_handler;
@@ -270,6 +271,18 @@ fn main() -> anyhow::Result<()> {
 
     let mut dispatcher = ActionDispatcher::new(output_device, throttle_emit);
 
+    // Initialize Hyprland lock watcher if available
+    let hyprland_lock_watcher = match hyprland_lock::HyprlandLockWatcher::new() {
+        Ok(watcher) => {
+            println!("Hyprland lock detection enabled");
+            Some(watcher)
+        }
+        Err(e) => {
+            println!("Hyprland lock detection not available: {}", e);
+            None
+        }
+    };
+
     // Main loop
     loop {
         if config.notifications {
@@ -307,6 +320,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Check if we should disable mappings due to lock state
+            let mappings_enabled = hyprland_lock_watcher
+                .as_ref()
+                .map(|watcher| !watcher.is_locked())
+                .unwrap_or(true);
+
             for input_device in input_devices.values_mut() {
                 if !readable_fds.contains(input_device.as_raw_fd()) {
                     continue;
@@ -319,6 +338,7 @@ fn main() -> anyhow::Result<()> {
                     &config,
                     &mut operator_handler,
                     &mut mainctrl,
+                    mappings_enabled,
                 )? {
                     let device_info = input_device.to_info();
                     println!("Found a removed device: {:?}", device_info.name);
@@ -393,6 +413,7 @@ fn handle_input_events(
     config: &Config,
     operator_handler: &mut Option<OperatorHandler>,
     mainctrl: &mut MainController,
+    mappings_enabled: bool,
 ) -> anyhow::Result<bool> {
     let events: Vec<_> = match input_device.fetch_events() {
         Err(err) if err.raw_os_error() == Some(ENODEV) => {
@@ -403,9 +424,16 @@ fn handle_input_events(
     }
     .collect();
 
-    let info = Rc::new(input_device.to_info());
-    let input_events = events.iter().map(|e| Event::new(info.clone(), *e)).collect();
-    handle_events(handler, dispatcher, config, input_events, operator_handler, mainctrl)?;
+    if mappings_enabled {
+        let info = Rc::new(input_device.to_info());
+        let input_events = events.iter().map(|e| Event::new(info.clone(), *e)).collect();
+        handle_events(handler, dispatcher, config, input_events, operator_handler, mainctrl)?;
+    } else {
+        // When mappings are disabled (screen locked), pass through original events directly
+        for event in events {
+            dispatcher.on_action(crate::action::Action::InputEvent(event), mainctrl)?;
+        }
+    }
     Ok(true)
 }
 
